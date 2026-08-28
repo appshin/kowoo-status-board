@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KOWOO THAI 설비 가동현황판</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<style>
+:root{
+  --ink:#15181d; --graphite:#1c2128; --paper:#f3f2ee; --paper-2:#ffffff;
+  --amber:#e8892f; --amber-dim:#c76f1e;
+  --run:#3f9d5e; --run-bg:#e3f3e6;
+  --setup:#c98a1f; --setup-bg:#faf1de;
+  --stop:#9aa0a8; --stop-bg:#eceae5;
+  --nodata:#c2beb4; --nodata-bg:#f5f3ee;
+  --stale:#d5533f;
+  --muted:#8b93a1;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{font-family:'Noto Sans KR',sans-serif;background:var(--paper);color:var(--ink);-webkit-font-smoothing:antialiased;}
+.mono{font-family:'IBM Plex Mono',monospace;}
+.disp{font-family:'Space Grotesk',sans-serif;}
+
+header{
+  background:linear-gradient(180deg,var(--graphite),var(--ink));color:#fff;
+  padding:16px 20px;position:sticky;top:0;z-index:10;
+}
+header .row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;}
+header h1{font-family:'Space Grotesk',sans-serif;font-size:18px;margin:0;}
+header .tag{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.12em;color:var(--amber);text-transform:uppercase;}
+nav{display:flex;gap:6px;}
+nav button{all:unset;cursor:pointer;padding:8px 14px;border-radius:20px;font-size:12.5px;font-weight:600;color:#c4cad3;border:1px solid #3a4453;}
+nav button.active{background:var(--amber);color:#1c1200;border-color:var(--amber);}
+
+#main{padding:20px;max-width:1400px;margin:0 auto;}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px;font-size:12px;color:#555;align-items:center;}
+.legend .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:middle;}
+
+.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px;}
+select,input[type=text],input[type=url]{font-family:'IBM Plex Mono',monospace;font-size:12.5px;padding:7px 10px;border-radius:7px;border:1px solid #d6d2c8;background:#fff;color:var(--ink);}
+button.btn{font-family:'Noto Sans KR',sans-serif;font-weight:600;font-size:13px;padding:9px 16px;border-radius:8px;border:none;cursor:pointer;background:var(--amber);color:#241600;}
+button.btn:hover{background:var(--amber-dim);}
+button.btn.ghost{background:transparent;border:1px solid #d6d2c8;color:#444;}
+button.btn.ghost:hover{background:#efece5;}
+button.btn.small{padding:6px 11px;font-size:12px;}
+
+.bgroup{margin-bottom:26px;}
+.bgroup h2{font-family:'Space Grotesk',sans-serif;font-size:16px;margin:0 0 10px 0;display:flex;align-items:center;gap:8px;}
+.bgroup h2 .cnt{font-family:'IBM Plex Mono',monospace;font-size:11px;color:#999;font-weight:400;}
+
+.eq-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;}
+.eq-card{
+  border-radius:11px;padding:12px 13px;cursor:pointer;border:1.5px solid transparent;
+  background:var(--nodata-bg);transition:transform .1s;
+}
+.eq-card:hover{transform:translateY(-1px);}
+.eq-card.run{background:var(--run-bg);border-color:#bfe2c7;}
+.eq-card.setup{background:var(--setup-bg);border-color:#ecd9a8;}
+.eq-card.stop{background:var(--stop-bg);border-color:#d8d5cd;}
+.eq-card.nodata{background:var(--nodata-bg);border-color:#e3e0d8;}
+.eq-card .top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px;}
+.eq-card .eqid{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:13px;}
+.eq-card .status-dot{width:10px;height:10px;border-radius:50%;flex:0 0 auto;margin-top:3px;}
+.status-dot.run{background:var(--run);}
+.status-dot.setup{background:var(--setup);}
+.status-dot.stop{background:var(--stop);}
+.status-dot.nodata{background:var(--nodata);}
+.eq-card .eqname{font-size:10.5px;color:#666;margin-bottom:6px;line-height:1.3;min-height:26px;}
+.eq-card .prod{font-size:12px;font-weight:600;line-height:1.3;}
+.eq-card .meta{font-size:10px;color:#999;margin-top:6px;font-family:'IBM Plex Mono',monospace;}
+.eq-card .stale{color:var(--stale);font-weight:700;}
+
+/* input form */
+.card{background:var(--paper-2);border:1px solid #e3e1da;border-radius:12px;padding:20px;max-width:520px;margin:0 auto;}
+.card h2{font-family:'Space Grotesk',sans-serif;font-size:18px;margin:0 0 4px 0;}
+.card .sub{font-size:12.5px;color:#7c8493;margin-bottom:18px;font-family:'IBM Plex Mono',monospace;}
+.status-choice{display:flex;gap:8px;margin-bottom:16px;}
+.status-choice button{
+  all:unset;cursor:pointer;flex:1;text-align:center;padding:14px 8px;border-radius:10px;
+  border:1.5px solid #e3e1da;font-weight:700;font-size:13px;
+}
+.status-choice button.sel-run{border-color:var(--run);background:var(--run-bg);color:var(--run);}
+.status-choice button.sel-setup{border-color:var(--setup);background:var(--setup-bg);color:var(--setup);}
+.status-choice button.sel-stop{border-color:var(--stop);background:var(--stop-bg);color:#666;}
+.field{margin-bottom:14px;}
+.field label{display:block;font-size:12px;color:#7c8493;margin-bottom:5px;font-family:'IBM Plex Mono',monospace;}
+.field select,.field input{width:100%;padding:10px 12px;font-size:14px;}
+.submit-row{display:flex;gap:10px;margin-top:18px;}
+.submit-row button{flex:1;padding:13px;font-size:14px;}
+#confirmMsg{text-align:center;padding:40px 20px;}
+#confirmMsg .big{font-size:40px;margin-bottom:10px;}
+
+/* QR page */
+.qr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;}
+.qr-cell{background:#fff;border:1px solid #e3e1da;border-radius:10px;padding:12px;text-align:center;}
+.qr-cell .qrimg{margin:0 auto 8px auto;}
+.qr-cell .eqid{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:13px;}
+.qr-cell .eqname{font-size:9.5px;color:#777;margin-top:2px;line-height:1.25;}
+
+@media print{
+  header,.toolbar,.legend,#qrToolbar{display:none !important;}
+  body{background:#fff;}
+  .qr-cell{break-inside:avoid;border:1px solid #999;}
+}
+#toast{position:fixed;bottom:22px;right:22px;background:var(--ink);color:#fff;padding:11px 18px;border-radius:9px;font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .25s;z-index:50;}
+#toast.show{opacity:1;}
+.hidden{display:none !important;}
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
+.login-card{background:#fff;border-radius:14px;padding:32px 28px;max-width:360px;width:100%;box-shadow:0 4px 24px rgba(0,0,0,.08);}
+.login-card h1{font-family:'Space Grotesk',sans-serif;font-size:20px;margin:0 0 4px 0;}
+.login-card .sub{font-size:12px;color:#8b93a1;margin-bottom:22px;font-family:'IBM Plex Mono',monospace;}
+.login-card input{width:100%;padding:11px 13px;margin-bottom:12px;border-radius:8px;border:1px solid #d6d2c8;font-size:14px;}
+.login-card button{width:100%;padding:12px;margin-top:6px;}
+.login-err{color:var(--stale);font-size:12.5px;margin-top:10px;min-height:16px;}
+.userbar{font-size:11px;color:#9aa3ad;display:flex;align-items:center;gap:8px;}
+.userbar button{all:unset;cursor:pointer;color:var(--amber);text-decoration:underline;font-size:11px;}
+::-webkit-scrollbar{width:9px;height:9px;}
+::-webkit-scrollbar-thumb{background:#c9c5ba;border-radius:6px;}
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <div>
+      <div class="tag">KOWOO Thai · Live Status</div>
+      <h1>설비 가동현황판</h1>
+    </div>
+    <div style="display:flex;align-items:center;gap:14px;">
+      <nav id="nav"></nav>
+      <div class="userbar" id="userbar"></div>
+    </div>
+  </div>
+</header>
+<div id="main"></div>
+<div id="toast"></div>
+
+<script id="equipdata" type="application/json">[{"key": "F1-KWI-CL-228", "building": "F1", "eqname": "MQB/SA6 TUBE CNC#20 / SKT-100 (TUBE 20-1)", "eqid": "KWI-CL-228", "products": ["MQB/SA6 TUBE"], "note": "", "qrid": "KWI-CL-228", "qrid_confirmed": true}, {"key": "F1-KWI-CL-39", "building": "F1", "eqname": "MQB/SA6 TUBE CNC#20 / PUMA240 (TUBE 20-3)", "eqid": "KWI-CL-39", "products": ["MQB/SA6 TUBE"], "note": "", "qrid": "KWI-CL-39", "qrid_confirmed": true}, {"key": "F1-KWI-CL-224", "building": "F1", "eqname": "MQB/SA6 TUBE CNC#20 / SKT-100 (TUBE 20-2)", "eqid": "KWI-CL-224", "products": ["MQB/SA6 TUBE"], "note": "", "qrid": "KWI-CL-224", "qrid_confirmed": true}, {"key": "F1-KWI-CL-21", "building": "F1", "eqname": "MQB/SA6 TUBE CNC#20 / LYNX200A (TUBE 20-4)", "eqid": "KWI-CL-21", "products": ["MQB/SA6 TUBE"], "note": "", "qrid": "KWI-CL-21", "qrid_confirmed": true}, {"key": "F1-KWI-CL-229", "building": "F1", "eqname": "MQB/SA6 TUBE CNC#10 / WIA E200C (TUBE 10-1)", "eqid": "KWI-CL-229", "products": ["MQB/SA6 TUBE"], "note": "", "qrid": "KWI-CL-229", "qrid_confirmed": true}, {"key": "F1-KWI-CL-172", "building": "F1", "eqname": "MQB/SA6 TUBE CNC#10 / HIT-400G (TUBE 10-3)", "eqid": "KWI-CL-172", "products": ["MQB/SA6 TUBE"], "note": "", "qrid": "KWI-CL-172", "qrid_confirmed": true}, {"key": "F1-KWI-CL-230", "building": "F1", "eqname": "MQB/SA6 TUBE CNC#10 / WIA E200C (TUBE 10-2)", "eqid": "KWI-CL-230", "products": ["MQB/SA6 TUBE"], "note": "", "qrid": "KWI-CL-230", "qrid_confirmed": true}, {"key": "F1-KWI-CL-173", "building": "F1", "eqname": "MQB/SA6 TUBE CNC#10 / HIT-400G (TUBE 10-4)", "eqid": "KWI-CL-173", "products": ["MQB/SA6 TUBE"], "note": "", "qrid": "KWI-CL-173", "qrid_confirmed": true}, {"key": "F1-162", "building": "F1", "eqname": "NA5 SHAFT UPPER CNC#30", "eqid": "162", "products": ["NA5 SHAFT UPPER"], "note": "", "qrid": "162", "qrid_confirmed": true}, {"key": "F1-234", "building": "F1", "eqname": "NA5 SHAFT UPPER CNC#30", "eqid": "234", "products": ["NA5 SHAFT UPPER"], "note": "", "qrid": "234", "qrid_confirmed": true}, {"key": "F1-KWI-CL-223", "building": "F1", "eqname": "NA5 SHAFT UPPER CNC#10/#20 · MQB/SA6 SHAFT CNC#10 / SKT-100 (SHAFT 10-2)", "eqid": "KWI-CL-223", "products": ["NA5 SHAFT UPPER", "MQB/SA6 SHAFT"], "note": "같은 CNC를 NA5/MQB 공용 가능성 (도면상 두 라벨 겹침)", "qrid": "KWI-CL-223", "qrid_confirmed": true}, {"key": "F1-KWI-CL-225", "building": "F1", "eqname": "NA5 SHAFT UPPER CNC#10/#20 · MQB/SA6 SHAFT CNC#10 / SKT-100 (SHAFT 10-1)", "eqid": "KWI-CL-225", "products": ["NA5 SHAFT UPPER", "MQB/SA6 SHAFT"], "note": "", "qrid": "KWI-CL-225", "qrid_confirmed": true}, {"key": "F1-KWI-CL-175", "building": "F1", "eqname": "MQB/SA6 SHAFT CNC#10 / KIT400 (SHAFT 10-6)", "eqid": "KWI-CL-175", "products": ["MQB/SA6 SHAFT"], "note": "", "qrid": "KWI-CL-175", "qrid_confirmed": true}, {"key": "F1-KWI-CL-30", "building": "F1", "eqname": "MQB/SA6 SHAFT CNC#10 / LYNX2200 (SHAFT 10-5)", "eqid": "KWI-CL-30", "products": ["MQB/SA6 SHAFT"], "note": "", "qrid": "KWI-CL-30", "qrid_confirmed": true}, {"key": "F1-단동19호 (DHP-25-22)", "building": "F1", "eqname": "단동설비 - 10산 PIPE JOINT / 단동(싱글스핀들)", "eqid": "단동19호 (DHP-25-22)", "products": ["Z121/AI4", "Ni1i PIPE JOINT"], "note": "", "qrid": "단동19호 (DHP-25-22)", "qrid_confirmed": true}, {"key": "F1-단동20호 (DHP-25-23)", "building": "F1", "eqname": "단동설비 - 10산 PIPE JOINT / 단동(싱글스핀들)", "eqid": "단동20호 (DHP-25-23)", "products": ["Z121/AI4", "Ni1i PIPE JOINT"], "note": "", "qrid": "단동20호 (DHP-25-23)", "qrid_confirmed": true}, {"key": "F1-단동1호 (DHP-25-19)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동1호 (DHP-25-19)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동1호 (DHP-25-19)", "qrid_confirmed": true}, {"key": "F1-단동2호 (DHP-25-15)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동2호 (DHP-25-15)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동2호 (DHP-25-15)", "qrid_confirmed": true}, {"key": "F1-단동3호 (DHP-25-29)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동3호 (DHP-25-29)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동3호 (DHP-25-29)", "qrid_confirmed": true}, {"key": "F1-단동4호 (DHP-25-13)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동4호 (DHP-25-13)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동4호 (DHP-25-13)", "qrid_confirmed": true}, {"key": "F1-단동5호 (DHP-25-8)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동5호 (DHP-25-8)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동5호 (DHP-25-8)", "qrid_confirmed": true}, {"key": "F1-단동6호 (DHP-25-27)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동6호 (DHP-25-27)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동6호 (DHP-25-27)", "qrid_confirmed": true}, {"key": "F1-단동7호 (DHP-25-28)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동7호 (DHP-25-28)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동7호 (DHP-25-28)", "qrid_confirmed": true}, {"key": "F1-단동8호 (DHP-25-14)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동8호 (DHP-25-14)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동8호 (DHP-25-14)", "qrid_confirmed": true}, {"key": "F1-단동9호 (DHP-25-18)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동9호 (DHP-25-18)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동9호 (DHP-25-18)", "qrid_confirmed": true}, {"key": "F1-단동10호 (DHP-25-22)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동10호 (DHP-25-22)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동10호 (DHP-25-22)", "qrid_confirmed": true}, {"key": "F1-단동11호 (DHP-25-23)", "building": "F1", "eqname": "단동설비 - 공용풀 (MQB/SA6 SHAFT 계열) / 단동(싱글스핀들)", "eqid": "단동11호 (DHP-25-23)", "products": ["MQB/SA6 SHAFT (특정 품목 라벨 없음", "공용 추정)"], "note": "", "qrid": "단동11호 (DHP-25-23)", "qrid_confirmed": true}, {"key": "F1-단동17호 (DHP-25-25)", "building": "F1", "eqname": "단동설비 - 6산/9산/12산 PIPE JOINT (RBI) / 단동(싱글스핀들)", "eqid": "단동17호 (DHP-25-25)", "products": ["6산/9산/12산 PIPE JOINT (RBI)"], "note": "", "qrid": "단동17호 (DHP-25-25)", "qrid_confirmed": true}, {"key": "F1-단동18호 (DHP-25-24)", "building": "F1", "eqname": "단동설비 - 6산/9산/12산 PIPE JOINT (RBI) / 단동(싱글스핀들)", "eqid": "단동18호 (DHP-25-24)", "products": ["6산/9산/12산 PIPE JOINT (RBI)"], "note": "", "qrid": "단동18호 (DHP-25-24)", "qrid_confirmed": true}, {"key": "F2-MHY-1", "building": "F2", "eqname": "다축설비 / 다축(Multi-spindle)", "eqid": "MHY-1", "products": ["TIAGO", "IB GB 3100/GCI(TLQL ESCL)", "IB GB 2900/3900(TLQL N/Key)"], "note": "", "qrid": "MHY-1", "qrid_confirmed": true}, {"key": "F2-MHY-2", "building": "F2", "eqname": "다축설비 / 다축(Multi-spindle)", "eqid": "MHY-2", "products": ["NX4(N3) N/Key(MSCL)", "Ni1i"], "note": "", "qrid": "MHY-2", "qrid_confirmed": true}, {"key": "F2-MHY-5", "building": "F2", "eqname": "다축설비 / 다축(Multi-spindle)", "eqid": "MHY-5", "products": ["IB GB MSCL(공용사용)", "HCYB TILT MSCL(2600)", "JG/QXI", "ZF_BYD EM2E_SA6(LHD/RHD)", "NEXTEER_B216", "CEER/PS/AY5G", "MARUTI_INDIA"], "note": "", "qrid": "MHY-5", "qrid_confirmed": true}, {"key": "F2-113", "building": "F2", "eqname": "CNC(113/237 인근) / CNC#10", "eqid": "113", "products": ["KA4 Non key/KA4 MSCL", "HCYB2700/HCYB2900", "HCYB2800", "HCYB Tilt MSCL", "KA4 ESCL/JG/BN7i(W/H)"], "note": "도면상 인근 박스, 참고용", "qrid": "113", "qrid_confirmed": true}, {"key": "F2-237", "building": "F2", "eqname": "CNC(113/237 인근) / CNC#20", "eqid": "237", "products": ["ZF_BYD EM2E_SA6(LHD", "RHD)_PS"], "note": "빨간 연결선으로 명확히 표시됨", "qrid": "237", "qrid_confirmed": true}, {"key": "F2-144", "building": "F2", "eqname": "CNC(144/143 인근) - JG SHAFT UPPER / CNC#10", "eqid": "144", "products": ["JG SHAFT UPPER", "CEER/JA PE3"], "note": "", "qrid": "144", "qrid_confirmed": true}, {"key": "F2-143", "building": "F2", "eqname": "CNC(144/143 인근) - JG SHAFT UPPER / CNC#10", "eqid": "143", "products": ["JG SHAFT UPPER", "CEER/JA PE3"], "note": "참고용, 143/144 인접", "qrid": "143", "qrid_confirmed": true}, {"key": "F2-157", "building": "F2", "eqname": "선삭2/선삭1 (157/67/158/68) / 선삭2", "eqid": "157", "products": ["NX4(N3) Non Key(MSCL)", "Ni1i", "AX"], "note": "", "qrid": "157", "qrid_confirmed": true}, {"key": "F2-67", "building": "F2", "eqname": "선삭2/선삭1 (157/67/158/68) / 선삭2", "eqid": "67", "products": ["NX4(N3) Non Key(MSCL)", "Ni1i", "AX"], "note": "", "qrid": "67", "qrid_confirmed": true}, {"key": "F2-158", "building": "F2", "eqname": "선삭2/선삭1 (157/67/158/68) / 선삭1", "eqid": "158", "products": ["NX4(N3) Non Key(MSCL)", "Ni1i", "AX"], "note": "", "qrid": "158", "qrid_confirmed": true}, {"key": "F2-68", "building": "F2", "eqname": "선삭2/선삭1 (157/67/158/68) / 선삭1", "eqid": "68", "products": ["NX4(N3) Non Key(MSCL)", "Ni1i", "AX"], "note": "", "qrid": "68", "qrid_confirmed": true}, {"key": "F2-111", "building": "F2", "eqname": "절단 (111/219) / 절단", "eqid": "111", "products": ["IB GB 2900/3900", "HCYB2600/HCYB2800", "Y450 MSCL", "QXI", "W601 TILT MSCL"], "note": "인근 박스 기준, 참고용", "qrid": "111", "qrid_confirmed": true}, {"key": "F2-219", "building": "F2", "eqname": "절단 (111/219) / 절단", "eqid": "219", "products": ["IB GB 2900/3900", "HCYB2600/HCYB2800", "Y450 MSCL", "QXI", "W601 TILT MSCL"], "note": "인근 박스 기준, 참고용", "qrid": "219", "qrid_confirmed": true}, {"key": "F2-23", "building": "F2", "eqname": "CNC (23/148/23/45) / CNC", "eqid": "23", "products": ["NX4 Non key/NX4 MSCL/Ni1i", "US4 TELES ESCL", "US4 TELES N/KEY", "NX4 ESCL", "CEER"], "note": "상단 23번기", "qrid": "23-A(확인필요)", "qrid_confirmed": false}, {"key": "F2-148", "building": "F2", "eqname": "CNC (23/148/23/45) / CNC", "eqid": "148", "products": ["NX4 Non key/NX4 MSCL/Ni1i", "US4 TELES ESCL", "US4 TELES N/KEY", "NX4 ESCL", "CEER"], "note": "", "qrid": "148-A(확인필요)", "qrid_confirmed": false}, {"key": "F2-23-2", "building": "F2", "eqname": "CNC (23/148/23/45) / CNC", "eqid": "23", "products": ["TIAGO"], "note": "하단 23번기 - 동일번호 다른 기계로 보임, 확인 필요", "qrid": "23-B(확인필요)", "qrid_confirmed": false}, {"key": "F2-45", "building": "F2", "eqname": "CNC (23/148/23/45) / CNC", "eqid": "45", "products": ["TIAGO"], "note": "", "qrid": "45", "qrid_confirmed": true}, {"key": "F2-129", "building": "F2", "eqname": "IB GB 가공존 (129/114/54/127/207/51) / 선삭", "eqid": "129", "products": ["IB GB GCI", "3100(TLQL ESCL/US4 ESCL)", "IB GB 2900/3900-TL QL N-KEY", "Y450 MSCL/Y450 ESCL", "QXI/HCYB2600", "HCYB2900단조-US4 TELES MSCL/N-KEY"], "note": "", "qrid": "129", "qrid_confirmed": true}, {"key": "F2-114", "building": "F2", "eqname": "IB GB 가공존 (129/114/54/127/207/51) / 선삭", "eqid": "114", "products": ["상동"], "note": "", "qrid": "114", "qrid_confirmed": true}, {"key": "F2-54", "building": "F2", "eqname": "IB GB 가공존 (129/114/54/127/207/51) / 선삭", "eqid": "54", "products": ["상동"], "note": "", "qrid": "54", "qrid_confirmed": true}, {"key": "F2-127", "building": "F2", "eqname": "IB GB 가공존 (129/114/54/127/207/51) / 절단", "eqid": "127", "products": ["상동"], "note": "", "qrid": "127", "qrid_confirmed": true}, {"key": "F2-207", "building": "F2", "eqname": "IB GB 가공존 (129/114/54/127/207/51) / 선삭1", "eqid": "207", "products": ["상동"], "note": "", "qrid": "207", "qrid_confirmed": true}, {"key": "F2-51", "building": "F2", "eqname": "IB GB 가공존 (129/114/54/127/207/51) / 선삭1", "eqid": "51", "products": ["상동"], "note": "", "qrid": "51", "qrid_confirmed": true}, {"key": "F2-140", "building": "F2", "eqname": "IB GB 가공존 (140/9/135/72/117/30) / 배부", "eqid": "140", "products": ["IB GB 2900/3900", "NX4(N3)/KA4 MSCL/Ni1i", "HCYB TILT MSCL(2600)", "QXI F/L"], "note": "", "qrid": "140", "qrid_confirmed": true}, {"key": "F2-9", "building": "F2", "eqname": "IB GB 가공존 (140/9/135/72/117/30) / 배부", "eqid": "9", "products": ["상동"], "note": "", "qrid": "9", "qrid_confirmed": true}, {"key": "F2-135", "building": "F2", "eqname": "IB GB 가공존 (140/9/135/72/117/30) / 선삭2", "eqid": "135", "products": ["상동"], "note": "", "qrid": "135", "qrid_confirmed": true}, {"key": "F2-72", "building": "F2", "eqname": "IB GB 가공존 (140/9/135/72/117/30) / 선삭2", "eqid": "72", "products": ["상동"], "note": "", "qrid": "72", "qrid_confirmed": true}, {"key": "F2-117", "building": "F2", "eqname": "IB GB 가공존 (140/9/135/72/117/30) / 선삭&배부 (#CNC10)", "eqid": "117", "products": ["상동"], "note": "", "qrid": "117", "qrid_confirmed": true}, {"key": "F2-30", "building": "F2", "eqname": "IB GB 가공존 (140/9/135/72/117/30) / AY5G_#30/BN7i (#CNC30)", "eqid": "30", "products": ["AY5G_#30", "BN7i"], "note": "", "qrid": "30", "qrid_confirmed": true}, {"key": "F2-#20", "building": "F2", "eqname": "NA5", "eqid": "#20", "products": ["NA5"], "note": "", "qrid": "#20", "qrid_confirmed": true}, {"key": "F2-#30 (상단)", "building": "F2", "eqname": "NA5", "eqid": "#30 (상단)", "products": ["NA5"], "note": "", "qrid": "#30 (상단)", "qrid_confirmed": true}, {"key": "F2-#10", "building": "F2", "eqname": "NA5", "eqid": "#10", "products": ["NA5"], "note": "", "qrid": "#10", "qrid_confirmed": true}, {"key": "F2-#30 (하단)", "building": "F2", "eqname": "NA5", "eqid": "#30 (하단)", "products": ["NA5"], "note": "", "qrid": "#30 (하단)", "qrid_confirmed": true}, {"key": "F2-167", "building": "F2", "eqname": "NA5", "eqid": "167", "products": ["NA5"], "note": "", "qrid": "167", "qrid_confirmed": true}, {"key": "F2-나사(236)", "building": "F2", "eqname": "나사/절단", "eqid": "나사(236)", "products": ["SMART MSCL", "B216", "AY5G", "MARUTI"], "note": "", "qrid": "나사(236)", "qrid_confirmed": true}, {"key": "F2-절단(126)", "building": "F2", "eqname": "나사/절단", "eqid": "절단(126)", "products": ["SMART MSCL", "B216", "AY5G", "MARUTI"], "note": "", "qrid": "절단(126)", "qrid_confirmed": true}, {"key": "F2-138", "building": "F2", "eqname": "SMART CAR ESCL / 절단(#10)", "eqid": "138", "products": ["NEXTEER SMART CAR ESCL"], "note": "", "qrid": "138", "qrid_confirmed": true}, {"key": "F2-142", "building": "F2", "eqname": "SMART CAR ESCL / 나사(#20)", "eqid": "142", "products": ["NEXTEER SMART CAR ESCL"], "note": "", "qrid": "142", "qrid_confirmed": true}, {"key": "F2-184", "building": "F2", "eqname": "SMART CAR ESCL / 선삭(#30)", "eqid": "184", "products": ["NEXTEER SMART CAR ESCL"], "note": "", "qrid": "184", "qrid_confirmed": true}, {"key": "F2-183", "building": "F2", "eqname": "SMART CAR ESCL / 선삭(#30)", "eqid": "183", "products": ["NEXTEER SMART CAR ESCL"], "note": "", "qrid": "183", "qrid_confirmed": true}, {"key": "F2-174", "building": "F2", "eqname": "SMART CAR MSCL / 절단(#10)", "eqid": "174", "products": ["NEXTEER SMART CAR MSCL"], "note": "", "qrid": "174", "qrid_confirmed": true}, {"key": "F2-124", "building": "F2", "eqname": "SMART CAR MSCL / 나사(#20)", "eqid": "124", "products": ["NEXTEER SMART CAR MSCL"], "note": "", "qrid": "124", "qrid_confirmed": true}, {"key": "F2-136", "building": "F2", "eqname": "SMART CAR MSCL / 선삭(#30)", "eqid": "136", "products": ["NEXTEER SMART CAR MSCL"], "note": "", "qrid": "136", "qrid_confirmed": true}, {"key": "F2-141", "building": "F2", "eqname": "SMART CAR MSCL / 선삭(#30)", "eqid": "141", "products": ["NEXTEER SMART CAR MSCL"], "note": "", "qrid": "141", "qrid_confirmed": true}, {"key": "F3-MHY-6", "building": "F3", "eqname": "다축설비 / 다축(Multi-spindle)", "eqid": "MHY-6", "products": ["JA PE3", "AI4", "SC6E_ZF"], "note": "이송 중인 설비 (사용자 확인)", "qrid": "MHY-6", "qrid_confirmed": true}, {"key": "F3-MHY-4", "building": "F3", "eqname": "다축설비 / 다축(Multi-spindle)", "eqid": "MHY-4", "products": ["RB C-MDPS", "RBK ESCL", "X100 ESCL/MSCL", "HB PE", "UB TELES ESCL/MSCL", "X103 ESCL/MSCL", "C300 ESCL/MSCL", "X81C LHD/RHD"], "note": "", "qrid": "MHY-4", "qrid_confirmed": true}, {"key": "F3-MHY-3", "building": "F3", "eqname": "다축설비 / 다축(Multi-spindle)", "eqid": "MHY-3", "products": ["HCYB TELES ESCL(2900)-US4 TELES/Non key", "BN7i", "HCYB TELES MSCL(2800&TMA)", "AX", "Y450 MSCL", "Y450 ESCL", "NX4/KA4 ESCL", "W601 TILT/TELES/TILT MSCL·ESCL"], "note": "", "qrid": "MHY-3", "qrid_confirmed": true}, {"key": "F3-152", "building": "F3", "eqname": "CNC (152/118/153/119) / CNC", "eqid": "152", "products": ["HCYB TILT ESCL(2700)/HCYB2900 TELES ESCL(2900)-(#10)", "HCYB TELES MSCL(2800&TMA)", "BN7i(#10)", "NX4/KA4 ESCL(#10)"], "note": "", "qrid": "152", "qrid_confirmed": true}, {"key": "F3-118", "building": "F3", "eqname": "CNC (152/118/153/119) / CNC", "eqid": "118", "products": ["상동"], "note": "", "qrid": "118", "qrid_confirmed": true}, {"key": "F3-153", "building": "F3", "eqname": "CNC (152/118/153/119) / CNC", "eqid": "153", "products": ["상동"], "note": "", "qrid": "153", "qrid_confirmed": true}, {"key": "F3-119", "building": "F3", "eqname": "CNC (152/118/153/119) / CNC", "eqid": "119", "products": ["상동"], "note": "", "qrid": "119", "qrid_confirmed": true}, {"key": "F3-(번호 미상)", "building": "F3", "eqname": "키홀 존 / 키홀", "eqid": "(번호 미상)", "products": ["NX4/KA4 ESCL", "HCYB TELES ESCL(2900)", "BN7i"], "note": "", "qrid": "F3-01(임시)", "qrid_confirmed": false}, {"key": "F3-(번호 미상)-2", "building": "F3", "eqname": "전조기/키홀 존 / 전조기", "eqid": "(번호 미상)", "products": ["RB C-MDPS", "RBK ESCL", "X100 ESCL/MSCL", "HB PE", "UB TELES ESCL/MSCL", "X103 ESCL/MSCL", "C300 ESCL/MSCL"], "note": "", "qrid": "F3-02(임시)", "qrid_confirmed": false}, {"key": "F3-(번호 미상)-3", "building": "F3", "eqname": "전조기/키홀 존 / 키홀", "eqid": "(번호 미상)", "products": ["RB C-MDPS", "X100 MSCL", "HB PE", "X103 MSCL", "UB RELES MSCL", "C300 MSCL"], "note": "", "qrid": "F3-03(임시)", "qrid_confirmed": false}, {"key": "F3-210", "building": "F3", "eqname": "210/211 CNC / CNC", "eqid": "210", "products": ["UB TELES ESCL/MSCL", "X103 ESCL/MSCL", "C300 ESCL/MSCL"], "note": "", "qrid": "210", "qrid_confirmed": true}, {"key": "F3-211", "building": "F3", "eqname": "210/211 CNC / #CNC-10", "eqid": "211", "products": ["X81C LHD/RHD", "HB PE", "UB TELES ESCL/MSCL", "X103 MSCL/ESCL", "C300 MSCL/ESCL"], "note": "", "qrid": "211", "qrid_confirmed": true}, {"key": "F3-27", "building": "F3", "eqname": "PIPE JOINT (6산/9산/12산)", "eqid": "27", "products": ["6산 PIPE JOINT"], "note": "", "qrid": "27", "qrid_confirmed": true}, {"key": "F3-28", "building": "F3", "eqname": "PIPE JOINT (6산/9산/12산)", "eqid": "28", "products": ["6산 PIPE JOINT"], "note": "", "qrid": "28", "qrid_confirmed": true}, {"key": "F3-65", "building": "F3", "eqname": "PIPE JOINT (6산/9산/12산)", "eqid": "65", "products": ["9산 PIPE JOINT"], "note": "", "qrid": "65", "qrid_confirmed": true}, {"key": "F3-53", "building": "F3", "eqname": "PIPE JOINT (6산/9산/12산)", "eqid": "53", "products": ["9산 PIPE JOINT"], "note": "", "qrid": "53", "qrid_confirmed": true}, {"key": "F3-125", "building": "F3", "eqname": "PIPE JOINT (6산/9산/12산)", "eqid": "125", "products": ["12산 PIPE JOINT"], "note": "", "qrid": "125", "qrid_confirmed": true}, {"key": "F3-92", "building": "F3", "eqname": "PIPE JOINT (6산/9산/12산)", "eqid": "92", "products": ["12산 PIPE JOINT"], "note": "", "qrid": "92", "qrid_confirmed": true}, {"key": "F3-121", "building": "F3", "eqname": "121/146 존", "eqid": "121", "products": ["W601 TILT MSCL", "W601 TELES ESCL", "W601 TILT ESCL", "NEXTEER_139+332", "W502", "BYD SC6E"], "note": "", "qrid": "121", "qrid_confirmed": true}, {"key": "F3-146", "building": "F3", "eqname": "121/146 존", "eqid": "146", "products": ["W601 TILT MSCL", "W601 TELES ESCL", "W601 TILT ESCL", "NEXTEER_139+332"], "note": "", "qrid": "146", "qrid_confirmed": true}, {"key": "F3-150", "building": "F3", "eqname": "150 (고주파/교정 인근)", "eqid": "150", "products": ["HCYB TELES MSCL(2800)", "W601 TILT MSCL", "AX", "Y450 MSCL"], "note": "", "qrid": "150", "qrid_confirmed": true}, {"key": "F3-36", "building": "F3", "eqname": "36/148/37 (고주파/교정 인근)", "eqid": "36", "products": ["RB C-MDPS", "RBK ESCL", "HB PE", "X100 ESCL/MSCL"], "note": "", "qrid": "36", "qrid_confirmed": true}, {"key": "F3-148", "building": "F3", "eqname": "36/148/37 (고주파/교정 인근)", "eqid": "148", "products": ["UB TELES ESCL/MSCL", "X103 ESCL/MSCL", "C300 ESCL/MSCL"], "note": "", "qrid": "148-B(확인필요)", "qrid_confirmed": false}, {"key": "F3-37", "building": "F3", "eqname": "36/148/37 (고주파/교정 인근) / 단 CNC148호기 가능제품", "eqid": "37", "products": ["RB C-MDPS", "RBK ESCL", "S201 MSCL", "X100 ESCL/MSCL"], "note": "", "qrid": "37", "qrid_confirmed": true}, {"key": "F3-(번호 미상)-4", "building": "F3", "eqname": "고주파/교정기 인근 (번호 미상)", "eqid": "(번호 미상)", "products": ["RB C-MDPS", "X100 MSCL", "X103 MSCL", "UB RELES MSCL", "C300 MSCL (BUY 3차/구형S/U)"], "note": "", "qrid": "F3-04(임시)", "qrid_confirmed": false}, {"key": "F3-(번호 미상) A", "building": "F3", "eqname": "SHAFT UPPER (AI4/SX3I)", "eqid": "(번호 미상) A", "products": ["AI4", "SX3I SHAFT UPPER"], "note": "", "qrid": "F3-05(임시)", "qrid_confirmed": false}, {"key": "F3-(번호 미상) B", "building": "F3", "eqname": "SHAFT UPPER (AI4/SX3I)", "eqid": "(번호 미상) B", "products": ["SX3I"], "note": "", "qrid": "F3-06(임시)", "qrid_confirmed": false}]</script>
+<script id="productdata" type="application/json">[{"model": "HEDD", "part_name": "HOUSING A", "part_no": "4470FA3991S", "label": "HOUSING A [HEDD] · 4470FA3991S"}, {"model": "HEDD", "part_name": "HOUSING B", "part_no": "MEK64006702", "label": "HOUSING B [HEDD] · MEK64006702"}, {"model": "131", "part_name": "HOUSING B", "part_no": "3660EA3006B", "label": "HOUSING B [131] · 3660EA3006B"}, {"model": "R200", "part_name": "LARGE PINION", "part_no": "602707500AV3", "label": "LARGE PINION [R200] · 602707500AV3"}, {"model": "VW MQB27", "part_name": "TUBE-R", "part_no": "A2302016", "label": "TUBE-R [VW MQB27] · A2302016"}, {"model": "VW MQB27", "part_name": "SHAFT-L", "part_no": "A2303019", "label": "SHAFT-L [VW MQB27] · A2303019"}, {"model": "VW MQB27", "part_name": "SHAFT-R", "part_no": "A2303020", "label": "SHAFT-R [VW MQB27] · A2303020"}, {"model": "BYD HA2H (MQB공용)", "part_name": "TUBE", "part_no": "A2302024", "label": "TUBE [BYD HA2H (MQB공용)] · A2302024"}, {"model": "BYD HA2H RHD", "part_name": "SHAFT-R", "part_no": "A2303028", "label": "SHAFT-R [BYD HA2H RHD] · A2303028"}, {"model": "BYD HA2H LHD", "part_name": "SHAFT-L", "part_no": "A2303029", "label": "SHAFT-L [BYD HA2H LHD] · A2303029"}, {"model": "BYD CHN", "part_name": "TUBE YOKE", "part_no": "A2302028", "label": "TUBE YOKE [BYD CHN] · A2302028"}, {"model": "BYD CHN", "part_name": "SHAFT YOKE", "part_no": "A2303034", "label": "SHAFT YOKE [BYD CHN] · A2303034"}, {"model": "BYD SC6E", "part_name": "Pipe JOINT", "part_no": "A2302011", "label": "Pipe JOINT [BYD SC6E] · A2302011"}, {"model": "BYD SC6E", "part_name": "SHAFT YOKE_LHD", "part_no": "A2303014", "label": "SHAFT YOKE_LHD [BYD SC6E] · A2303014"}, {"model": "BYD SC6E", "part_name": "SHAFT YOKE_RHD", "part_no": "A2303014", "label": "SHAFT YOKE_RHD [BYD SC6E] · A2303014"}, {"model": "BYD SA6(EXPORT)", "part_name": "TUBE", "part_no": "", "label": "TUBE [BYD SA6(EXPORT)]"}, {"model": "BYD SA6(EXPORT)", "part_name": "SHAFT-R", "part_no": "", "label": "SHAFT-R [BYD SA6(EXPORT)]"}, {"model": "BYD SA6(EXPORT)", "part_name": "SHAFT-L", "part_no": "", "label": "SHAFT-L [BYD SA6(EXPORT)]"}, {"model": "BYD SA6(THAILAND)", "part_name": "BYD SA6 (RHD) YOKE TUBE", "part_no": "A2302026", "label": "BYD SA6 (RHD) YOKE TUBE [BYD SA6(THAILAND)] · A2302026"}, {"model": "BYD SA6(THAILAND)", "part_name": "BYD SA6 (LHD) YOKE TUBE", "part_no": "A2302027", "label": "BYD SA6 (LHD) YOKE TUBE [BYD SA6(THAILAND)] · A2302027"}, {"model": "BYD SA6(THAILAND)", "part_name": "BYD SA6 (RHD) YOKE SHAFT", "part_no": "A2303031", "label": "BYD SA6 (RHD) YOKE SHAFT [BYD SA6(THAILAND)] · A2303031"}, {"model": "BYD SA6(THAILAND)", "part_name": "BYD SA6 (LHD) YOKE SHAFT", "part_no": "A2303032", "label": "BYD SA6 (LHD) YOKE SHAFT [BYD SA6(THAILAND)] · A2303032"}, {"model": "BAC (V2)", "part_name": "CLARWE SHAFT UPPER", "part_no": "", "label": "CLARWE SHAFT UPPER [BAC (V2)]"}, {"model": "N-CAR", "part_name": "N-CAR SHAFT UPPER", "part_no": "A230302343", "label": "N-CAR SHAFT UPPER [N-CAR] · A230302343"}, {"model": "SX3i", "part_name": "SX3i Nonkey S/U", "part_no": "A270401101", "label": "SX3i Nonkey S/U [SX3i] · A270401101"}, {"model": "SX3i", "part_name": "SX3i ESCL S/U", "part_no": "A270401100", "label": "SX3i ESCL S/U [SX3i] · A270401100"}, {"model": "SX3id", "part_name": "SX3id Nonkey S/U", "part_no": "A270401106", "label": "SX3id Nonkey S/U [SX3id] · A270401106"}, {"model": "SX3id", "part_name": "SX3id ESCL S/U", "part_no": "A270401103", "label": "SX3id ESCL S/U [SX3id] · A270401103"}, {"model": "BJ1", "part_name": "BJ1 Nonkey S/U", "part_no": "", "label": "BJ1 Nonkey S/U [BJ1]"}, {"model": "BJ1", "part_name": "EM2E UCS", "part_no": "A010F092", "label": "EM2E UCS [BJ1] · A010F092"}, {"model": "BJ1", "part_name": "SA6 UCS RHD", "part_no": "A037F239", "label": "SA6 UCS RHD [BJ1] · A037F239"}, {"model": "BJ1", "part_name": "SA6 UCS LHD", "part_no": "A037F245", "label": "SA6 UCS LHD [BJ1] · A037F245"}, {"model": "BJ1", "part_name": "PS UCS", "part_no": "A037Y589", "label": "PS UCS [BJ1] · A037Y589"}, {"model": "BJ1", "part_name": "BYD SC6E", "part_no": "A038T508", "label": "BYD SC6E [BJ1] · A038T508"}, {"model": "BJ1", "part_name": "GM GEM S/U", "part_no": "A010M938", "label": "GM GEM S/U [BJ1] · A010M938"}, {"model": "BJ1", "part_name": "GM GEMW(25) S/U", "part_no": "A027T240", "label": "GM GEMW(25) S/U [BJ1] · A027T240"}, {"model": "BJ1", "part_name": "GM SPIN", "part_no": "", "label": "GM SPIN [BJ1]"}, {"model": "BJ1", "part_name": "VW MQB27", "part_no": "", "label": "VW MQB27 [BJ1]"}, {"model": "BJ1", "part_name": "FIAT LHD(83.5)", "part_no": "", "label": "FIAT LHD(83.5) [BJ1]"}, {"model": "BJ1", "part_name": "FIAT GEN3(Standard)", "part_no": "", "label": "FIAT GEN3(Standard) [BJ1]"}, {"model": "SMART CAR", "part_name": "SHAFT, TUBULAR STEERING (ESCL)", "part_no": "38307302", "label": "SHAFT, TUBULAR STEERING (ESCL) [SMART CAR] · 38307302"}, {"model": "139+332", "part_name": "SHAFT, TUBULAR STEERING", "part_no": "38312160", "label": "SHAFT, TUBULAR STEERING [139+332] · 38312160"}, {"model": "SMART CAR", "part_name": "SHAFT, TUBULAR STEERING (MSCL) / F1H", "part_no": "38307278", "label": "SHAFT, TUBULAR STEERING (MSCL) / F1H [SMART CAR] · 38307278"}, {"model": "CA B216", "part_name": "CA B216-G2 TUBULAR", "part_no": "PN38369710", "label": "CA B216-G2 TUBULAR [CA B216] · PN38369710"}, {"model": "GAC AY5G", "part_name": "SHAFT, TUBULAR STEERING", "part_no": "PN38313471", "label": "SHAFT, TUBULAR STEERING [GAC AY5G] · PN38313471"}, {"model": "MARUTI SUZUKI", "part_name": "SHAFT, TUBULAR STEERING", "part_no": "PN38345225", "label": "SHAFT, TUBULAR STEERING [MARUTI SUZUKI] · PN38345225"}, {"model": "IB/GB 3100", "part_name": "IB/GB 3100 SHAFT UPPER", "part_no": "GM711A3100", "label": "IB/GB 3100 SHAFT UPPER [IB/GB 3100] · GM711A3100"}, {"model": "IB/GB 3900", "part_name": "IB/GB 3900 SHAFT UPPER", "part_no": "GM711A3900", "label": "IB/GB 3900 SHAFT UPPER [IB/GB 3900] · GM711A3900"}, {"model": "GCI", "part_name": "GCI SHAFT UPPER", "part_no": "GL714A8800", "label": "GCI SHAFT UPPER [GCI] · GL714A8800"}, {"model": "IB/GB 2900", "part_name": "IB/GB 2900 SHAFT UPPER", "part_no": "GM711A2900", "label": "IB/GB 2900 SHAFT UPPER [IB/GB 2900] · GM711A2900"}, {"model": "TIAGO", "part_name": "TIAGO SHAFT UPPER", "part_no": "GL714A8600", "label": "TIAGO SHAFT UPPER [TIAGO] · GL714A8600"}, {"model": "MAIL Only", "part_name": "QXI F/L S/U", "part_no": "GL714K3010", "label": "QXI F/L S/U [MAIL Only] · GL714K3010"}, {"model": "MAIL / MDK", "part_name": "HC/YB ESCL TELE 6 S/U", "part_no": "GL714J2900", "label": "HC/YB ESCL TELE 6 S/U [MAIL / MDK] · GL714J2900"}, {"model": "MAIL Only", "part_name": "HC/YB MSCL TILT 6 S/U", "part_no": "GL714J2600", "label": "HC/YB MSCL TILT 6 S/U [MAIL Only] · GL714J2600"}, {"model": "MAIL / MDK", "part_name": "HC/YB MSCL TELE 6 S/U", "part_no": "GL714J2800", "label": "HC/YB MSCL TELE 6 S/U [MAIL / MDK] · GL714J2800"}, {"model": "MAIL Only", "part_name": "W601 ESCL TELES S/U", "part_no": "GL714B1600", "label": "W601 ESCL TELES S/U [MAIL Only] · GL714B1600"}, {"model": "MAIL Only", "part_name": "W601 ESCL TILT S/U (W502)", "part_no": "GL714B1700", "label": "W601 ESCL TILT S/U (W502) [MAIL Only] · GL714B1700"}, {"model": "MAIL Only", "part_name": "W601 MSCL TILT S/U (W601 MTI)", "part_no": "GL714A9500", "label": "W601 MSCL TILT S/U (W601 MTI) [MAIL Only] · GL714A9500"}, {"model": "MAIL / MDK", "part_name": "HC/YB ESCL TILT 6 S/U", "part_no": "GL714J2700", "label": "HC/YB ESCL TILT 6 S/U [MAIL / MDK] · GL714J2700"}, {"model": "MAIL / MDK", "part_name": "RBC-MDPS S/U", "part_no": "GM71133300", "label": "RBC-MDPS S/U [MAIL / MDK] · GM71133300"}, {"model": "MAIL Only", "part_name": "RBK ESCL", "part_no": "GM79033100", "label": "RBK ESCL [MAIL Only] · GM79033100"}, {"model": "MAIL / MDK", "part_name": "LM MDPS 6 P/J_(REV. K)", "part_no": "GM83100500", "label": "LM MDPS 6 P/J_(REV. K) [MAIL / MDK] · GM83100500"}, {"model": "MAIL / MDK", "part_name": "C200 9 P/J_(REV. E)", "part_no": "GU83191700", "label": "C200 9 P/J_(REV. E) [MAIL / MDK] · GU83191700"}, {"model": "MAIL / MDK", "part_name": "LM F/L 9 P/J_(REV. D)", "part_no": "GU831A4000", "label": "LM F/L 9 P/J_(REV. D) [MAIL / MDK] · GU831A4000"}, {"model": "MAIL Only", "part_name": "RBC 6 P/J", "part_no": "GU83191400", "label": "RBC 6 P/J [MAIL Only] · GU83191400"}, {"model": "MAIL Only", "part_name": "TIAGO 6 P/J_(REV. B)", "part_no": "GU825C0000", "label": "TIAGO 6 P/J_(REV. B) [MAIL Only] · GU825C0000"}, {"model": "MAIL Only", "part_name": "W502 9 P/J_(REV. D)", "part_no": "GU825A6700", "label": "W502 9 P/J_(REV. D) [MAIL Only] · GU825A6700"}, {"model": "MAIL Only", "part_name": "BC3N 9 P/J_(REV. B)", "part_no": "GU825CO000", "label": "BC3N 9 P/J_(REV. B) [MAIL Only] · GU825CO000"}, {"model": "MAIL Only", "part_name": "INTRA V10 12 P/J_(REV. B)", "part_no": "GU825V1000", "label": "INTRA V10 12 P/J_(REV. B) [MAIL Only] · GU825V1000"}, {"model": "NEW", "part_name": "W502 ESCL 12 S/U(**W601 ESCL TILT S/U)", "part_no": "GL714B2800", "label": "W502 ESCL 12 S/U(**W601 ESCL TILT S/U) [NEW] · GL714B2800"}, {"model": "NEW", "part_name": "BN7i 6 S/U(**HC/YB ESCL TELE 6 S/U)", "part_no": "GL714AY000Z1", "label": "BN7i 6 S/U(**HC/YB ESCL TELE 6 S/U) [NEW] · GL714AY000Z1"}, {"model": "NEW", "part_name": "TITAN EV P/J", "part_no": "GU825VE000", "label": "TITAN EV P/J [NEW] · GU825VE000"}, {"model": "NEW", "part_name": "BC4i P/J", "part_no": "GU835BT000", "label": "BC4i P/J [NEW] · GU835BT000"}, {"model": "MAIL Only", "part_name": "Al1 S/U", "part_no": "GL714SQ200", "label": "Al1 S/U [MAIL Only] · GL714SQ200"}, {"model": "MAIL Only", "part_name": "Al1 P/J", "part_no": "GU825SQ210", "label": "Al1 P/J [MAIL Only] · GU825SQ210"}, {"model": "MAIL Only", "part_name": "Ni1i S/U", "part_no": "GL714NB000", "label": "Ni1i S/U [MAIL Only] · GL714NB000"}, {"model": "MAIL Only", "part_name": "Ni1i P/J", "part_no": "GU825CO000", "label": "Ni1i P/J [MAIL Only] · GU825CO000"}, {"model": "MAIL Only", "part_name": "Z121 P/J", "part_no": "GU825Z1201", "label": "Z121 P/J [MAIL Only] · GU825Z1201"}, {"model": "MAIL Only", "part_name": "S201 MSCL S/U", "part_no": "GL714S2015", "label": "S201 MSCL S/U [MAIL Only] · GL714S2015"}, {"model": "MAIL Only", "part_name": "S201 ESCL S/U", "part_no": "GL714S2014", "label": "S201 ESCL S/U [MAIL Only] · GL714S2014"}, {"model": "MAIL Only", "part_name": "NX4(N3) NON KEY", "part_no": "GL714N4200", "label": "NX4(N3) NON KEY [MAIL Only] · GL714N4200"}, {"model": "MAIL Only", "part_name": "KA4 NON KEY", "part_no": "GL714R0200", "label": "KA4 NON KEY [MAIL Only] · GL714R0200"}, {"model": "MAIL Only", "part_name": "NX4(N3) MSCL", "part_no": "GL714N4000", "label": "NX4(N3) MSCL [MAIL Only] · GL714N4000"}, {"model": "MAIL Only", "part_name": "KA4 MSCL", "part_no": "GL714R4000", "label": "KA4 MSCL [MAIL Only] · GL714R4000"}, {"model": "MAIL Only", "part_name": "NX4 ESCL S/U(for ASS'Y)", "part_no": "GL714N4100", "label": "NX4 ESCL S/U(for ASS'Y) [MAIL Only] · GL714N4100"}, {"model": "MAIL Only", "part_name": "AX S/U", "part_no": "GL714O6000", "label": "AX S/U [MAIL Only] · GL714O6000"}, {"model": "MAIL Only", "part_name": "US4 NON KEY", "part_no": "GL714A9700", "label": "US4 NON KEY [MAIL Only] · GL714A9700"}, {"model": "MAIL Only", "part_name": "HC/YB ESCL TELE 6/S/U", "part_no": "GL714J2900", "label": "HC/YB ESCL TELE 6/S/U [MAIL Only] · GL714J2900"}, {"model": "MAIL Only", "part_name": "US4 TELE ESCL S/U", "part_no": "GL714B1400", "label": "US4 TELE ESCL S/U [MAIL Only] · GL714B1400"}, {"model": "MAIL Only", "part_name": "US4 MSCL S/U(for ASS'Y)", "part_no": "GL711A3500", "label": "US4 MSCL S/U(for ASS'Y) [MAIL Only] · GL711A3500"}, {"model": "MAIL Only", "part_name": "HC/YB ESCL TILT 6/S/U", "part_no": "GL714J2700", "label": "HC/YB ESCL TILT 6/S/U [MAIL Only] · GL714J2700"}, {"model": "MAIL Only", "part_name": "HC/YB MSCL TILT 6/S/U", "part_no": "GL714J2600", "label": "HC/YB MSCL TILT 6/S/U [MAIL Only] · GL714J2600"}, {"model": "MAIL Only", "part_name": "HC/YB TELE NON KEY MSCL_TM", "part_no": "GL714J2810", "label": "HC/YB TELE NON KEY MSCL_TM [MAIL Only] · GL714J2810"}, {"model": "MAIL Only", "part_name": "KA4 ESCL S/U(for ASS'Y)", "part_no": "GL714R0100", "label": "KA4 ESCL S/U(for ASS'Y) [MAIL Only] · GL714R0100"}, {"model": "MAIL Only", "part_name": "IB/GB 3100 ESCL SHAFT UPPER", "part_no": "GM711A3100", "label": "IB/GB 3100 ESCL SHAFT UPPER [MAIL Only] · GM711A3100"}, {"model": "MAIL Only", "part_name": "TL/QL ESCL S/U (ASS'Y)", "part_no": "GL711A6300", "label": "TL/QL ESCL S/U (ASS'Y) [MAIL Only] · GL711A6300"}, {"model": "MAIL Only", "part_name": "TL/QL NON KEY SHAFT UPPER", "part_no": "GL714A8701", "label": "TL/QL NON KEY SHAFT UPPER [MAIL Only] · GL714A8701"}, {"model": "MAIL Only", "part_name": "Y450 ESCL S/U", "part_no": "GL714B1300", "label": "Y450 ESCL S/U [MAIL Only] · GL714B1300"}, {"model": "MAIL Only", "part_name": "Y450 MSCL S/U", "part_no": "GL714B1200", "label": "Y450 MSCL S/U [MAIL Only] · GL714B1200"}, {"model": "MDK Only", "part_name": "X100 MSCL S/U", "part_no": "GL714A6501", "label": "X100 MSCL S/U [MDK Only] · GL714A6501"}, {"model": "MDK Only", "part_name": "X100 ESCL S/U", "part_no": "GL714A6601", "label": "X100 ESCL S/U [MDK Only] · GL714A6601"}, {"model": "MDK Only", "part_name": "UB TELES MSCL S/U", "part_no": "GM713A1200", "label": "UB TELES MSCL S/U [MDK Only] · GM713A1200"}, {"model": "MDK Only", "part_name": "UB TELES ESCL S/U", "part_no": "GM713A1500", "label": "UB TELES ESCL S/U [MDK Only] · GM713A1500"}, {"model": "MDK Only", "part_name": "X103 MSCL", "part_no": "GL714J5200", "label": "X103 MSCL [MDK Only] · GL714J5200"}, {"model": "MDK Only", "part_name": "X103 ESCL", "part_no": "GL714J5300", "label": "X103 ESCL [MDK Only] · GL714J5300"}, {"model": "MDK Only", "part_name": "C300 MSCL", "part_no": "GL714A3800", "label": "C300 MSCL [MDK Only] · GL714A3800"}, {"model": "MDK Only", "part_name": "C300 ESCL", "part_no": "GL714A4800", "label": "C300 ESCL [MDK Only] · GL714A4800"}, {"model": "MDK Only", "part_name": "HB PE", "part_no": "GL714A9000", "label": "HB PE [MDK Only] · GL714A9000"}, {"model": "MDK Only", "part_name": "X81C LHD STR'G SHAFT", "part_no": "GA711A1300", "label": "X81C LHD STR'G SHAFT [MDK Only] · GA711A1300"}, {"model": "MDK Only", "part_name": "X81C RHD STR'G SHAFT", "part_no": "GA711A1100", "label": "X81C RHD STR'G SHAFT [MDK Only] · GA711A1100"}, {"model": "MDK Only", "part_name": "PU (2WD DO) 10P/J", "part_no": "GU83131600", "label": "PU (2WD DO) 10P/J [MDK Only] · GU83131600"}, {"model": "MDK Only", "part_name": "PU1.4 10P/J", "part_no": "GU825B1700", "label": "PU1.4 10P/J [MDK Only] · GU825B1700"}, {"model": "MDK Only", "part_name": "PU (2WD EX) 10P/J", "part_no": "GU83132500", "label": "PU (2WD EX) 10P/J [MDK Only] · GU83132500"}, {"model": "MDK Only", "part_name": "CK/IK SHAFT JOINT (LHD)", "part_no": "", "label": "CK/IK SHAFT JOINT (LHD) [MDK Only]"}, {"model": "MDK Only", "part_name": "PU (4WD DO) 10P/J", "part_no": "GU83130300", "label": "PU (4WD DO) 10P/J [MDK Only] · GU83130300"}, {"model": "MDK Only", "part_name": "PU (4WD EX) 10P/J", "part_no": "GU83132600", "label": "PU (4WD EX) 10P/J [MDK Only] · GU83132600"}, {"model": "MDK Only", "part_name": "MX1 36P/J", "part_no": "MFACSPJ06", "label": "MX1 36P/J [MDK Only] · MFACSPJ06"}, {"model": "MDK Only", "part_name": "MX (AB) 36P/J", "part_no": "MFACSPJ13", "label": "MX (AB) 36P/J [MDK Only] · MFACSPJ13"}, {"model": "MDK Only", "part_name": "PU 2WD (RH KJ2.9) 10P/J", "part_no": "GU82534200", "label": "PU 2WD (RH KJ2.9) 10P/J [MDK Only] · GU82534200"}, {"model": "MDK Only", "part_name": "TB 36P/J", "part_no": "MFACSPJ02", "label": "TB 36P/J [MDK Only] · MFACSPJ02"}, {"model": "MDK Only", "part_name": "GMT345/355 10P/J", "part_no": "GU83132800", "label": "GMT345/355 10P/J [MDK Only] · GU83132800"}, {"model": "MDK Only", "part_name": "CK/IK SHAFT JOINT (RHD)", "part_no": "", "label": "CK/IK SHAFT JOINT (RHD) [MDK Only]"}, {"model": "MDK Only", "part_name": "VG 6 STR'G TUBE", "part_no": "GT71212700", "label": "VG 6 STR'G TUBE [MDK Only] · GT71212700"}, {"model": "MDK Only", "part_name": "CK/IK 12P/J", "part_no": "GU825C3701", "label": "CK/IK 12P/J [MDK Only] · GU825C3701"}, {"model": "MDK Only", "part_name": "RJ(LH) 12P/J", "part_no": "GU825C3801", "label": "RJ(LH) 12P/J [MDK Only] · GU825C3801"}, {"model": "MDK Only", "part_name": "Y400 12P/J", "part_no": "GU825C2400", "label": "Y400 12P/J [MDK Only] · GU825C2400"}, {"model": "MDK Only", "part_name": "VI F/L 12P/J", "part_no": "GU83141010", "label": "VI F/L 12P/J [MDK Only] · GU83141010"}, {"model": "JG(eM Platform)", "part_name": "JG ESCL TILT S/U", "part_no": "GL714DC000", "label": "JG ESCL TILT S/U [JG(eM Platform)] · GL714DC000"}, {"model": "Velocity(CEER)", "part_name": "CEER VELOCITY S/U", "part_no": "GL714V2100", "label": "CEER VELOCITY S/U [Velocity(CEER)] · GL714V2100"}, {"model": "Velocity(CEER)", "part_name": "S201 MSCL S/U", "part_no": "GL714S2015", "label": "S201 MSCL S/U [Velocity(CEER)] · GL714S2015"}, {"model": "Velocity(CEER)", "part_name": "S201 ESCL S/U", "part_no": "GL714S2014", "label": "S201 ESCL S/U [Velocity(CEER)] · GL714S2014"}, {"model": "JA PE3", "part_name": "JA PE3 Nonkey S/U", "part_no": "GL714G6AA0", "label": "JA PE3 Nonkey S/U [JA PE3] · GL714G6AA0"}, {"model": "JA PE3", "part_name": "JA PE3 ESCL S/U", "part_no": "GL714G6AA0", "label": "JA PE3 ESCL S/U [JA PE3] · GL714G6AA0"}, {"model": "JA PE3", "part_name": "JA PE3 MSCL S/U", "part_no": "GL714G6AA0", "label": "JA PE3 MSCL S/U [JA PE3] · GL714G6AA0"}, {"model": "MDK", "part_name": "JM S/U", "part_no": "", "label": "JM S/U [MDK]"}, {"model": "MDK", "part_name": "UB TILT MSCL", "part_no": "", "label": "UB TILT MSCL [MDK]"}, {"model": "MDK", "part_name": "HA C-EPS", "part_no": "", "label": "HA C-EPS [MDK]"}, {"model": "MDK", "part_name": "PB ESCL", "part_no": "", "label": "PB ESCL [MDK]"}]</script>
+<script>
+// ---------- Firebase config ----------
+// 1) Firebase 콘솔(console.firebase.google.com)에서 프로젝트를 만들고
+// 2) Realtime Database를 활성화한 뒤
+// 3) 프로젝트 설정 > 앱 추가(웹) 에서 나오는 값을 아래에 그대로 붙여넣어주세요.
+const firebaseConfig = {
+  apiKey: "AIzaSyA1J7M-cxJOKrnURa7y48HMxzKF7rhtEyI",
+  authDomain: "kowoo-status.firebaseapp.com",
+  databaseURL: "https://kowoo-status-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "kowoo-status",
+  storageBucket: "kowoo-status.firebasestorage.app",
+  messagingSenderId: "346048949388",
+  appId: "1:346048949388:web:24c3ca4b148e2128a09fa9",
+  measurementId: "G-QCR0PDV8YH"
+};
+const FIREBASE_CONFIGURED = firebaseConfig.apiKey !== "YOUR_API_KEY";
+let db = null, auth = null;
+if(FIREBASE_CONFIGURED){
+  firebase.initializeApp(firebaseConfig);
+  db = firebase.database();
+  auth = firebase.auth();
+  auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+}
+
+const EQUIP = JSON.parse(document.getElementById('equipdata').textContent);
+const PRODUCTS = JSON.parse(document.getElementById('productdata').textContent);
+const BUILDINGS = [...new Set(EQUIP.map(e=>e.building))];
+
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(window.__toastTimer);
+  window.__toastTimer = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+function fmtAgo(ts){
+  if(!ts) return '기록 없음';
+  const diffMs = Date.now() - ts;
+  const min = Math.floor(diffMs/60000);
+  if(min < 1) return '방금 전';
+  if(min < 60) return `${min}분 전`;
+  const hr = Math.floor(min/60);
+  if(hr < 24) return `${hr}시간 전`;
+  return `${Math.floor(hr/24)}일 전`;
+}
+function isStale(ts, hours=4){
+  if(!ts) return false;
+  return (Date.now()-ts) > hours*3600*1000;
+}
+function safeKey(key){
+  // Firebase RTDB paths can't contain . # $ [ ] /
+  return key.replace(/[.#$/\[\]]/g, '_');
+}
+
+// ---------- Storage (Firebase Realtime Database) ----------
+async function loadStatus(key){
+  if(!db) return null;
+  try{
+    const snap = await db.ref('eqstatus/'+safeKey(key)).once('value');
+    return snap.exists() ? snap.val() : null;
+  }catch(e){ console.error(e); return null; }
+}
+async function loadAllStatus(){
+  if(!db) return {};
+  try{
+    const snap = await db.ref('eqstatus').once('value');
+    const raw = snap.exists() ? snap.val() : {};
+    const out = {};
+    EQUIP.forEach(e=>{ out[e.qrid] = raw[safeKey(e.qrid)] || null; });
+    return out;
+  }catch(e){ console.error(e); return {}; }
+}
+async function saveStatus(key, data){
+  if(!db) return false;
+  try{
+    await db.ref('eqstatus/'+safeKey(key)).set(data);
+    return true;
+  }catch(e){ console.error(e); return false; }
+}
+function watchAllStatus(callback){
+  if(!db) return ()=>{};
+  const ref = db.ref('eqstatus');
+  const handler = (snap)=>{
+    const raw = snap.exists() ? snap.val() : {};
+    const out = {};
+    EQUIP.forEach(e=>{ out[e.qrid] = raw[safeKey(e.qrid)] || null; });
+    callback(out);
+  };
+  ref.on('value', handler);
+  return ()=>ref.off('value', handler);
+}
+
+// ---------- Routing ----------
+const PAGES = [
+  {id:'dash', label:'대시보드'},
+  {id:'qr', label:'설비 QR코드'},
+  {id:'prodqr', label:'품목 QR코드'},
+];
+let currentPage = 'dash';
+let statusCache = {};
+
+function renderNav(){
+  const nav = document.getElementById('nav');
+  nav.innerHTML = '';
+  PAGES.forEach(p=>{
+    const b = document.createElement('button');
+    b.className = p.id===currentPage?'active':'';
+    b.textContent = p.label;
+    b.onclick = ()=>{ currentPage=p.id; location.hash=''; render(); };
+    nav.appendChild(b);
+  });
+}
+
+function getEqParam(){
+  const params = new URLSearchParams(location.search);
+  return params.get('eq');
+}
+
+let currentUser = null;
+
+function renderLogin(){
+  document.getElementById('nav').innerHTML = '';
+  const bar = document.getElementById('userbar');
+  if(bar) bar.innerHTML = '';
+  document.getElementById('main').innerHTML = `
+    <div class="login-wrap"><div class="login-card">
+      <h1>KOWOO THAI 설비 현황판</h1>
+      <div class="sub">직원 계정으로 로그인해주세요</div>
+      <input type="email" id="loginEmail" placeholder="이메일" autocomplete="username">
+      <input type="password" id="loginPw" placeholder="비밀번호" autocomplete="current-password">
+      <button class="btn" id="loginBtn">로그인</button>
+      <div class="login-err" id="loginErr"></div>
+    </div></div>
+  `;
+  const doLogin = async ()=>{
+    const email = document.getElementById('loginEmail').value.trim();
+    const pw = document.getElementById('loginPw').value;
+    const errEl = document.getElementById('loginErr');
+    errEl.textContent = '';
+    if(!email || !pw){ errEl.textContent = '이메일과 비밀번호를 입력해주세요.'; return; }
+    try{
+      await auth.signInWithEmailAndPassword(email, pw);
+    }catch(e){
+      errEl.textContent = '로그인 실패: 이메일 또는 비밀번호를 확인해주세요.';
+    }
+  };
+  document.getElementById('loginBtn').onclick = doLogin;
+  document.getElementById('loginPw').addEventListener('keydown', (e)=>{ if(e.key==='Enter') doLogin(); });
+}
+
+function renderUserbar(){
+  const bar = document.getElementById('userbar');
+  if(!bar || !currentUser) return;
+  bar.innerHTML = `<span>${currentUser.email}</span><button id="logoutBtn">로그아웃</button>`;
+  document.getElementById('logoutBtn').onclick = ()=>auth.signOut();
+}
+
+async function render(){
+  if(!FIREBASE_CONFIGURED){
+    document.getElementById('nav').innerHTML = '';
+    document.getElementById('main').innerHTML = `
+      <div class="card" style="max-width:640px;">
+        <h2>⚠ Firebase 설정이 필요합니다</h2>
+        <p style="font-size:13px;line-height:1.7;color:#555;">
+        app.js 상단의 <code>firebaseConfig</code> 값이 아직 예시값(YOUR_API_KEY 등)입니다.
+        Firebase 콘솔에서 프로젝트를 만들고 Realtime Database를 켠 뒤, 나오는 설정값을 그대로 붙여넣어주세요.
+        이 값을 넣기 전까지는 저장/조회가 되지 않습니다.</p>
+      </div>`;
+    return;
+  }
+  if(!currentUser){
+    renderLogin();
+    return;
+  }
+  renderUserbar();
+  const eqKey = getEqParam();
+  if(eqKey){
+    renderInputPage(eqKey);
+    return;
+  }
+  renderNav();
+  const main = document.getElementById('main');
+  if(currentPage==='dash') await renderDash(main);
+  else if(currentPage==='qr') renderQr(main);
+  else if(currentPage==='prodqr') renderProductQr(main);
+}
+
+// ---------- Dashboard ----------
+let dashUnsub = null;
+async function renderDash(main){
+  main.innerHTML = `<div class="legend" id="legend"></div><div id="dashBody">불러오는 중...</div>`;
+  document.getElementById('legend').innerHTML = `
+    <span><span class="dot" style="background:var(--run);"></span>가동중</span>
+    <span><span class="dot" style="background:var(--setup);"></span>셋업/교체중</span>
+    <span><span class="dot" style="background:var(--stop);"></span>정지</span>
+    <span><span class="dot" style="background:var(--nodata);"></span>보고 없음</span>
+    <span style="color:var(--stale);font-weight:700;">⚠ 4시간 이상 업데이트 없음 = 정보 오래됨</span>
+    <span style="margin-left:auto;color:var(--run);font-size:11px;">● 실시간 연결됨</span>
+  `;
+
+  function paint(){
+    const body = document.getElementById('dashBody');
+    if(!body) return;
+    body.innerHTML = BUILDINGS.map(b=>{
+      const items = EQUIP.filter(e=>e.building===b);
+      const runCount = items.filter(e=>statusCache[e.qrid]?.status==='run').length;
+      return `
+        <div class="bgroup">
+          <h2>${b} <span class="cnt">${runCount}/${items.length}대 가동중</span></h2>
+          <div class="eq-grid">
+            ${items.map(e=>renderEqCard(e)).join('')}
+          </div>
+        </div>
+      `;
+    }).join('');
+    body.querySelectorAll('.eq-card').forEach(el=>{
+      el.onclick = ()=>{
+        const key = el.dataset.key;
+        history.pushState(null,'', `?eq=${encodeURIComponent(key)}`);
+        renderInputPage(key);
+      };
+    });
+  }
+
+  statusCache = await loadAllStatus();
+  paint();
+
+  // live updates via Firebase listener (replaces polling)
+  if(dashUnsub) dashUnsub();
+  dashUnsub = watchAllStatus((data)=>{
+    statusCache = data;
+    if(currentPage==='dash' && !getEqParam()) paint();
+  });
+}
+
+function renderEqCard(e){
+  const s = statusCache[e.qrid];
+  const status = s?.status || 'nodata';
+  const stale = s && isStale(s.ts);
+  const label = {run:'가동중', setup:'셋업/교체중', stop:'정지', nodata:'보고 없음'}[status];
+  return `
+    <div class="eq-card ${status}" data-key="${e.qrid}">
+      <div class="top">
+        <div class="eqid">${e.qrid}${e.qrid_confirmed?"":'<span style="color:var(--stale);font-size:9px;margin-left:4px;">'+(e.qrid.includes("임시")?"[임시번호]":"[확인필요]")+"</span>"}</div>
+        <div class="status-dot ${status}"></div>
+      </div>
+      <div class="eqname">${e.eqname}</div>
+      <div class="prod">${s?.product ? s.product : label}</div>
+      <div class="meta ${stale?'stale':''}">${s?fmtAgo(s.ts):'-'} ${stale?'⚠':''}</div>
+    </div>
+  `;
+}
+
+// ---------- Input (scan) page ----------
+let inputChoice = null;
+async function renderInputPage(key){
+  const e = EQUIP.find(x=>x.qrid===key);
+  const main = document.getElementById('main');
+  document.getElementById('nav') && (document.getElementById('nav').innerHTML='');
+  if(!e){
+    main.innerHTML = `<div class="card"><h2>설비를 찾을 수 없습니다</h2><p>${key}</p><button class="btn ghost" onclick="location.href=location.pathname">대시보드로</button></div>`;
+    return;
+  }
+  const existing = await loadStatus(key);
+  inputChoice = existing?.status || null;
+
+  main.innerHTML = `
+    <div class="card">
+      <h2>${e.eqname}</h2>
+      <div class="sub">${e.building} · 설비번호 ${e.qrid}${e.qrid_confirmed?"":" (확정 전 임시값)"}</div>
+      <div class="status-choice" id="statusChoice">
+        <button data-v="run" class="${inputChoice==='run'?'sel-run':''}">🟢 가동중</button>
+        <button data-v="setup" class="${inputChoice==='setup'?'sel-setup':''}">🟡 셋업/교체중</button>
+        <button data-v="stop" class="${inputChoice==='stop'?'sel-stop':''}">⚪ 정지</button>
+      </div>
+      <div class="field" id="prodField">
+        <label>작업 품목</label>
+        <select id="prodSel">
+          <option value="">선택 안 함</option>
+          <optgroup label="이 설비 관련 품목">
+          ${e.products.map(p=>`<option value="${p}" ${existing?.product===p?'selected':''}>${p}</option>`).join('')}
+          </optgroup>
+          <optgroup label="전체 품목 목록 (코우타이 생산품목)">
+          ${PRODUCTS.map(p=>`<option value="${p.label}" ${existing?.product===p.label?'selected':''}>${p.label}</option>`).join('')}
+          </optgroup>
+          <option value="__other__" ${existing?.product && !e.products.includes(existing.product) && !PRODUCTS.some(p=>p.label===existing.product)?'selected':''}>기타(직접입력)</option>
+        </select>
+        <button class="btn ghost small" id="scanProdBtn" style="margin-top:8px;">📷 QR로 품목 스캔</button>
+      </div>
+      <div class="field hidden" id="otherField">
+        <label>품목명 직접입력</label>
+        <input type="text" id="otherInput" value="${existing?.product && !e.products.includes(existing.product) && !PRODUCTS.some(p=>p.label===existing.product)?existing.product:''}">
+      </div>
+      <div class="field">
+        <label>비고</label>
+        <input type="text" id="noteInput" value="${existing?.note||''}" placeholder="예: 금형교체 중, 15시 재가동 예정">
+      </div>
+      <div class="submit-row">
+        <button class="btn" id="submitBtn">저장</button>
+        <button class="btn ghost" id="backBtn">대시보드</button>
+      </div>
+    </div>
+  `;
+
+  document.querySelectorAll('#statusChoice button').forEach(b=>{
+    b.onclick = ()=>{
+      inputChoice = b.dataset.v;
+      document.querySelectorAll('#statusChoice button').forEach(x=>x.className='');
+      b.className = 'sel-'+inputChoice;
+    };
+  });
+  const prodSel = document.getElementById('prodSel');
+  const otherField = document.getElementById('otherField');
+  function syncOther(){ otherField.classList.toggle('hidden', prodSel.value!=='__other__'); }
+  prodSel.onchange = syncOther;
+  syncOther();
+
+  document.getElementById('scanProdBtn').onclick = ()=>{
+    startProductScan((data)=>{
+      if(!data.startsWith(PROD_TAG)){
+        toast('품목 QR이 아닙니다. 품목 QR코드를 스캔해주세요.');
+        return;
+      }
+      const label = data.slice(PROD_TAG.length);
+      const match = [...prodSel.options].find(o=>o.value===label);
+      if(match){
+        prodSel.value = label;
+        toast('품목이 인식되었습니다: ' + label);
+      } else {
+        prodSel.value = '__other__';
+        document.getElementById('otherInput').value = label;
+        toast('목록에 없는 품목입니다 - 직접입력에 채워넣었습니다.');
+      }
+      syncOther();
+    });
+  };
+
+  document.getElementById('backBtn').onclick = ()=>{ location.href = location.pathname; };
+  document.getElementById('submitBtn').onclick = async ()=>{
+    if(!inputChoice){ toast('상태를 선택해주세요.'); return; }
+    let product = prodSel.value;
+    if(product==='__other__') product = document.getElementById('otherInput').value.trim();
+    const data = {
+      status: inputChoice,
+      product: product || null,
+      note: document.getElementById('noteInput').value.trim(),
+      ts: Date.now()
+    };
+    const ok = await saveStatus(key, data);
+    if(ok){
+      main.innerHTML = `<div class="card"><div id="confirmMsg"><div class="big">✅</div><div style="font-weight:700;font-size:16px;">저장되었습니다</div>
+        <div style="color:#888;font-size:13px;margin-top:6px;">${e.qrid} · ${ {run:'가동중',setup:'셋업/교체중',stop:'정지'}[inputChoice] }</div>
+        <button class="btn ghost" style="margin-top:20px;" onclick="location.href=location.pathname">대시보드로</button>
+      </div></div>`;
+    } else {
+      toast('저장 실패 - 다시 시도해주세요.');
+    }
+  };
+}
+
+// ---------- QR management ----------
+function getBaseUrl(){
+  return localStorage.getItem('kowoo_qr_baseurl') || (location.origin + location.pathname);
+}
+function renderQr(main){
+  main.innerHTML = '';
+  const base = getBaseUrl();
+  main.innerHTML = `
+    <div class="toolbar" id="qrToolbar">
+      <label class="mono" style="font-size:11.5px;color:#7c8493;">배포 URL (이 화면이 실제로 열리는 주소)</label>
+      <input type="url" id="baseUrlInput" style="width:380px;" value="${getBaseUrl()}" placeholder="https://...">
+      <button class="btn ghost small" id="saveUrlBtn">저장</button>
+      <button class="btn small" id="printBtn">전체 인쇄</button>
+    </div>
+    <p style="font-size:12px;color:#7c8493;margin:-6px 0 6px 0;">이 웹을 배포(공유)한 실제 주소를 위에 입력하면, 그 주소 기준으로 설비별 QR코드가 생성됩니다. QR을 인쇄해서 각 설비에 부착하면, 작업자가 폰 카메라로 스캔했을 때 바로 그 설비의 입력화면이 열립니다.</p>
+    <p style="font-size:12px;color:var(--stale);margin:0 0 6px 0;">⚠ 번호 옆 [확인필요]/[임시번호] 표시가 있는 설비는 현장 확인 후 실제 번호로 교체가 필요합니다 (F2/F3 "148"번 중복 1건, F2 "23"번 중복 2건, F3 번호 미상 6건).</p>
+    ${base.startsWith('file://') ? '<p style="font-size:12.5px;color:#fff;background:var(--stale);padding:8px 12px;border-radius:8px;margin:0 0 16px 0;"><b>⚠ 지금 배포 URL이 내 컴퓨터 파일 경로(file:///...)입니다.</b> 이 상태로 QR을 인쇄하면 다른 사람 폰에서는 절대 안 열립니다 — 반드시 인터넷에서 접속 가능한 https:// 주소(예: 이 아티팩트의 공유 링크, 또는 사내 웹서버 주소)로 바꿔서 저장해주세요.</p>' : ''}
+    <div id="qrGrid"></div>
+  `;
+  document.getElementById('saveUrlBtn').onclick = ()=>{
+    localStorage.setItem('kowoo_qr_baseurl', document.getElementById('baseUrlInput').value.trim());
+    toast('저장되었습니다. QR을 다시 생성합니다.');
+    renderQr(main);
+  };
+  document.getElementById('printBtn').onclick = ()=>window.print();
+
+  const grid = document.getElementById('qrGrid');
+  grid.innerHTML = BUILDINGS.map(b=>{
+    const items = EQUIP.filter(e=>e.building===b);
+    return `
+      <div class="bgroup">
+        <h2>${b} <span class="cnt">${items.length}대</span></h2>
+        <div class="qr-grid">
+        ${items.map(e=>`
+          <div class="qr-cell">
+            <div class="qrimg" id="qr-${e.qrid}"></div>
+            <div class="eqid">${e.qrid}${e.qrid_confirmed?"":'<span style="color:var(--stale);font-size:9px;display:block;margin-top:2px;">'+(e.qrid.includes("임시")?"[임시번호]":"[확인필요]")+"</span>"}</div>
+          </div>
+        `).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  EQUIP.forEach(e=>{
+    const url = `${base}${base.includes('?')?'&':'?'}eq=${encodeURIComponent(e.qrid)}`;
+    new QRCode(document.getElementById(`qr-${e.qrid}`), {
+      text: url, width:120, height:120, correctLevel: QRCode.CorrectLevel.M
+    });
+  });
+}
+
+// ---------- Product QR ----------
+const PROD_TAG = 'KOWOO-PRODUCT::';
+function renderProductQr(main){
+  main.innerHTML = `
+    <div class="toolbar">
+      <button class="btn small" id="printBtn2">전체 인쇄</button>
+    </div>
+    <p style="font-size:12px;color:#7c8493;margin:-6px 0 16px 0;">품목별 QR코드입니다. 인쇄해서 작업지시서·랙·박스 등에 부착하면,
+    설비 입력화면에서 "QR로 품목 스캔" 버튼으로 폰 카메라를 켜서 이 QR을 찍는 것만으로 품목이 자동 입력됩니다 (품목 선택 드롭다운 대신 사용 가능, 인터넷 연결 없이도 카메라만 있으면 인식됩니다).</p>
+    <div class="qr-grid" id="prodQrGrid"></div>
+  `;
+  document.getElementById('printBtn2').onclick = ()=>window.print();
+  const grid = document.getElementById('prodQrGrid');
+  grid.innerHTML = PRODUCTS.map((p,i)=>`
+    <div class="qr-cell">
+      <div class="qrimg" id="pqr-${i}"></div>
+      <div class="eqid" style="font-size:12px;">${p.part_name}</div>
+      <div class="eqname">[${p.model}]${p.part_no?' · '+p.part_no:''}</div>
+    </div>
+  `).join('');
+  PRODUCTS.forEach((p,i)=>{
+    new QRCode(document.getElementById(`pqr-${i}`), {
+      text: PROD_TAG + p.label, width:110, height:110, correctLevel: QRCode.CorrectLevel.M
+    });
+  });
+}
+
+// ---------- Camera QR scan (for product) ----------
+let scanStream = null;
+function stopScan(){
+  if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; }
+  clearInterval(window.__scanTimer);
+}
+async function startProductScan(onResult){
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:#000;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;';
+  overlay.innerHTML = `
+    <video id="scanVideo" style="width:100%;max-width:420px;border-radius:10px;" playsinline muted></video>
+    <div style="color:#fff;font-size:13px;margin-top:14px;">품목 QR을 카메라에 비춰주세요</div>
+    <button id="scanCancel" style="margin-top:18px;padding:10px 20px;border-radius:8px;border:none;background:#444;color:#fff;font-size:13px;">취소</button>
+  `;
+  document.body.appendChild(overlay);
+  const video = overlay.querySelector('#scanVideo');
+  overlay.querySelector('#scanCancel').onclick = ()=>{ stopScan(); overlay.remove(); };
+  try{
+    scanStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+  }catch(e){
+    toast('카메라를 열 수 없습니다 (권한 또는 https 필요).');
+    overlay.remove();
+    return;
+  }
+  video.srcObject = scanStream;
+  await video.play();
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  window.__scanTimer = setInterval(()=>{
+    if(!video.videoWidth) return;
+    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
+    const code = jsQR(imgData.data, imgData.width, imgData.height);
+    if(code && code.data){
+      stopScan();
+      overlay.remove();
+      onResult(code.data);
+    }
+  }, 300);
+}
+
+// ---------- Init ----------
+if(FIREBASE_CONFIGURED){
+  auth.onAuthStateChanged(user=>{
+    currentUser = user;
+    render();
+  });
+} else {
+  render();
+}
+
+</script>
+</body>
+</html>
