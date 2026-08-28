@@ -548,9 +548,15 @@ function renderQr(main){
 
   EQUIP.forEach(e=>{
     const url = `${base}${base.includes('?')?'&':'?'}eq=${encodeURIComponent(e.qrid)}`;
-    new QRCode(document.getElementById(`qr-${e.qrid}`), {
-      text: url, width:120, height:120, correctLevel: QRCode.CorrectLevel.M
-    });
+    try{
+      new QRCode(document.getElementById(`qr-${e.qrid}`), {
+        text: url, width:120, height:120, correctLevel: QRCode.CorrectLevel.M
+      });
+    }catch(err){
+      console.error('QR gen failed for', e.qrid, err);
+      const el = document.getElementById(`qr-${e.qrid}`);
+      if(el) el.innerHTML = '<div style="font-size:10px;color:var(--stale);padding:10px;">QR 생성 실패</div>';
+    }
   });
 }
 
@@ -575,9 +581,15 @@ function renderProductQr(main){
     </div>
   `).join('');
   PRODUCTS.forEach((p,i)=>{
-    new QRCode(document.getElementById(`pqr-${i}`), {
-      text: PROD_TAG + p.label, width:110, height:110, correctLevel: QRCode.CorrectLevel.M
-    });
+    try{
+      new QRCode(document.getElementById(`pqr-${i}`), {
+        text: PROD_TAG + p.label, width:110, height:110, correctLevel: QRCode.CorrectLevel.M
+      });
+    }catch(err){
+      console.error('QR gen failed for product', i, p.label, err);
+      const el = document.getElementById(`pqr-${i}`);
+      if(el) el.innerHTML = '<div style="font-size:10px;color:var(--stale);padding:10px;">QR 생성 실패</div>';
+    }
   });
 }
 
