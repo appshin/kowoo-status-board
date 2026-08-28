@@ -6,7 +6,7 @@
 <title>KOWOO THAI 설비 가동현황판</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
@@ -548,15 +548,15 @@ function renderQr(main){
 
   EQUIP.forEach(e=>{
     const url = `${base}${base.includes('?')?'&':'?'}eq=${encodeURIComponent(e.qrid)}`;
-    try{
-      new QRCode(document.getElementById(`qr-${e.qrid}`), {
-        text: url, width:120, height:120, correctLevel: QRCode.CorrectLevel.M
-      });
-    }catch(err){
-      console.error('QR gen failed for', e.qrid, err);
-      const el = document.getElementById(`qr-${e.qrid}`);
-      if(el) el.innerHTML = '<div style="font-size:10px;color:var(--stale);padding:10px;">QR 생성 실패</div>';
-    }
+    const el = document.getElementById(`qr-${e.qrid}`);
+    QRCode.toDataURL(url, {width:120, margin:1, errorCorrectionLevel:'M'}, function(err, dataUrl){
+      if(err){
+        console.error('QR gen failed for', e.qrid, err);
+        if(el) el.innerHTML = '<div style="font-size:10px;color:var(--stale);padding:10px;">QR 생성 실패</div>';
+        return;
+      }
+      if(el) el.innerHTML = `<img src="${dataUrl}" width="120" height="120" alt="QR">`;
+    });
   });
 }
 
@@ -581,15 +581,15 @@ function renderProductQr(main){
     </div>
   `).join('');
   PRODUCTS.forEach((p,i)=>{
-    try{
-      new QRCode(document.getElementById(`pqr-${i}`), {
-        text: PROD_TAG + p.label, width:110, height:110, correctLevel: QRCode.CorrectLevel.M
-      });
-    }catch(err){
-      console.error('QR gen failed for product', i, p.label, err);
-      const el = document.getElementById(`pqr-${i}`);
-      if(el) el.innerHTML = '<div style="font-size:10px;color:var(--stale);padding:10px;">QR 생성 실패</div>';
-    }
+    const el = document.getElementById(`pqr-${i}`);
+    QRCode.toDataURL(PROD_TAG + p.label, {width:110, margin:1, errorCorrectionLevel:'M'}, function(err, dataUrl){
+      if(err){
+        console.error('QR gen failed for product', i, p.label, err);
+        if(el) el.innerHTML = '<div style="font-size:10px;color:var(--stale);padding:10px;">QR 생성 실패</div>';
+        return;
+      }
+      if(el) el.innerHTML = `<img src="${dataUrl}" width="110" height="110" alt="QR">`;
+    });
   });
 }
 
