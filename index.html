@@ -335,7 +335,7 @@ function pfSplitMachineId(mid){
 
 function pfParseWorkbook(wb){
   const records = [];
-  let refDate = null;
+  const dateCounts = {}; // "year-month" -> {count, sample: Date}
   wb.SheetNames.forEach(name=>{
     if(PF_EXCLUDE_SHEETS.has(name)) return;
     const ws = wb.Sheets[name];
@@ -343,10 +343,13 @@ function pfParseWorkbook(wb){
     const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
     if(!rows.length) return;
 
-    if(!refDate){
-      for(let i=0;i<Math.min(3,rows.length);i++){
-        for(const v of rows[i]){ if(v instanceof Date){ refDate = v; break; } }
-        if(refDate) break;
+    for(let i=0;i<Math.min(3,rows.length);i++){
+      for(const v of rows[i]){
+        if(v instanceof Date){
+          const key = v.getFullYear()+'-'+v.getMonth();
+          if(!dateCounts[key]) dateCounts[key] = {count:0, sample:v};
+          dateCounts[key].count++;
+        }
       }
     }
 
@@ -403,6 +406,12 @@ function pfParseWorkbook(wb){
       }
     }
   });
+  // pick the majority month/year across all sheets, not just the first one seen —
+  // a few product sheets can carry stray dates from earlier tracking periods
+  let refDate = null, bestCount = 0;
+  Object.values(dateCounts).forEach(({count, sample})=>{
+    if(count > bestCount){ bestCount = count; refDate = sample; }
+  });
   return {records, refDate};
 }
 
@@ -430,7 +439,13 @@ async function pfHandleFile(file){
       toast('분석 실패: 이 파일에서 일별 실적 데이터를 찾지 못했습니다.');
       return false;
     }
-    pfRefDate = refDate || new Date();
+    // Excel/SheetJS dates are anchored at UTC midnight; reading them with local
+    // getters can roll to the previous day in timezones behind UTC. Normalize
+    // to a local-midnight Date for the SAME calendar day so every getFullYear/
+    // getMonth/getDate() call downstream is timezone-safe.
+    pfRefDate = refDate
+      ? new Date(refDate.getUTCFullYear(), refDate.getUTCMonth(), refDate.getUTCDate())
+      : new Date();
     pfDayIndex = pfBuildDayIndex(records);
     pfFileName = file.name;
     const today = new Date();
