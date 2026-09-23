@@ -323,7 +323,7 @@ function pfSplitMachineId(mid){
   if(/^(laser marking|marking|laser)$/i.test(s)) return {eqname:'레이져마킹기', eqid:null, process:s, seq:null};
   if(/^(lot marking|lot making)$/i.test(s)) return {eqname:'롯트마킹기', eqid:null, process:'Lot Marking', seq:null};
   if(/^slot$/i.test(s)) return {eqname:'슬롯마킹기', eqid:null, process:'Slot', seq:null};
-  if(/^chamfer$/i.test(s)) return {eqname:'면취기', eqid:null, process:'Chamfer', seq:null};
+  if(/^chamfer(ing)?$/i.test(s)) return {eqname:'CHAMFER-01', eqid:'CHAMFER-01', process:'Chamfer', seq:null};
   if(/^air blow$/i.test(s)) return {eqname:'에어세척기', eqid:null, process:'Air blow', seq:null};
   if(/^thread rolling$/i.test(s)) return {eqname:'전조기', eqid:null, process:'Thread rolling', seq:null};
   if(/^hardening$/i.test(s)) return {eqname:'고주파열처리기', eqid:null, process:'Hardening', seq:null};
