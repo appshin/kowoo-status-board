@@ -253,15 +253,25 @@ function pfNorm(s){
 }
 function pfBuildQridNorm(){
   const dict = {};
+  const byNumber = {};
+  function numKey(s){
+    const m = /^\d+$/.test(s.trim()) ? s.trim() : (s.match(/(\d+)$/) || [])[1];
+    return m || null;
+  }
   EQUIP.forEach(e=>{
     const label = effectiveLabel(e.qrid);
     const k = pfNorm(label);
     (dict[k] = dict[k]||[]).push(label);
+    const nk = numKey(label);
+    if(nk) (byNumber[nk] = byNumber[nk]||[]).push(label);
   });
   Object.values(customEquipment).forEach(c=>{
     const k = pfNorm(c.qrid);
     (dict[k] = dict[k]||[]).push(c.qrid);
+    const nk = numKey(c.qrid);
+    if(nk) (byNumber[nk] = byNumber[nk]||[]).push(c.qrid);
   });
+  dict.__byNumber = byNumber;
   return dict;
 }
 function pfMatchQrid(qridNormDict, eqid, eqname){
@@ -269,6 +279,16 @@ function pfMatchQrid(qridNormDict, eqid, eqname){
     if(!cand) continue;
     const qids = qridNormDict[pfNorm(cand)];
     if(qids && qids.length===1) return qids[0];
+  }
+  // fallback: a bare number (e.g. "114" extracted from "114 CNC 10") matching the
+  // trailing digits of a prefixed code (e.g. "DH-CL-114"), only when unambiguous
+  const byNumber = qridNormDict.__byNumber || {};
+  for(const cand of [eqid, eqname]){
+    if(!cand) continue;
+    if(/^\d+$/.test(cand.trim())){
+      const qids = byNumber[cand.trim()];
+      if(qids && qids.length===1) return qids[0];
+    }
   }
   return null;
 }
