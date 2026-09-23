@@ -439,13 +439,27 @@ async function pfHandleFile(file){
       toast('분석 실패: 이 파일에서 일별 실적 데이터를 찾지 못했습니다.');
       return false;
     }
+    // Prefer the month/year stated in the file NAME (e.g. "..._21_SEP_2026.xlsx") —
+    // this is far more reliable than parsing in-sheet Date cells, whose conversion
+    // has shown inconsistent behavior across browsers/SheetJS builds. Fall back to
+    // the in-sheet majority-vote date only if the filename doesn't carry one.
+    const MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+    const fnameMatch = file.name.match(/([A-Za-z]{3,9})[_\s-]?(\d{4})/);
+    let fromFilename = null;
+    if(fnameMatch){
+      const monKey = fnameMatch[1].slice(0,3).toLowerCase();
+      if(MONTHS[monKey] !== undefined){
+        fromFilename = new Date(parseInt(fnameMatch[2]), MONTHS[monKey], 1);
+      }
+    }
     // Excel/SheetJS dates are anchored at UTC midnight; reading them with local
     // getters can roll to the previous day in timezones behind UTC. Normalize
     // to a local-midnight Date for the SAME calendar day so every getFullYear/
     // getMonth/getDate() call downstream is timezone-safe.
-    pfRefDate = refDate
+    const fromSheet = refDate
       ? new Date(refDate.getUTCFullYear(), refDate.getUTCMonth(), refDate.getUTCDate())
-      : new Date();
+      : null;
+    pfRefDate = fromFilename || fromSheet || new Date();
     pfDayIndex = pfBuildDayIndex(records);
     pfFileName = file.name;
     const today = new Date();
