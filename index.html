@@ -360,24 +360,35 @@ function pfParseWorkbook(wb){
     }
     if(headerIdx===-1) return;
 
-    // Two header conventions seen in the wild:
+    // Three header conventions seen in the wild:
     //  (a) "Machine ID" (unique code) then "Machine#" (name/process station)
-    //  (b) "Machine #" then another "Machine #" - first one is the ID, second is the name
+    //  (b) "Machine #" then another adjacent "Machine #" - first is the ID, second the name
+    //  (c) a BLANK header cell holding the actual ID values, followed by a single
+    //      "Machine"/"Machine #" column holding the shift-descriptive name — the ID
+    //      column itself carries no header text in this variant
     let midCol=-1, machCol=-1;
-    header.forEach((label,ci)=>{
-      const l = pfCellStr(label);
-      if(!l) return;
+    for(let ci=0; ci<header.length; ci++){
+      const l = pfCellStr(header[ci]);
+      if(!l) continue;
       const key = l.replace(/\s/g,'').toLowerCase();
-      const isMachineCol = key.includes('machineid') || /^machine#?$/.test(key);
-      if(!isMachineCol) return;
-      if(key.includes('machineid')){
+      if(!/^machine(id)?#?$/.test(key)) continue;
+      if(key.includes('id')){
         midCol = ci;
-      } else if(midCol===-1){
-        midCol = ci; // first "Machine#"-style column = the ID column
-      } else if(machCol===-1){
-        machCol = ci; // second one = name/process station column
+        const l2 = pfCellStr(header[ci+1]);
+        const key2 = l2 ? l2.replace(/\s/g,'').toLowerCase() : '';
+        if(/^machine#?$/.test(key2)) machCol = ci+1;
+      } else {
+        const l2 = pfCellStr(header[ci+1]);
+        const key2 = l2 ? l2.replace(/\s/g,'').toLowerCase() : '';
+        if(/^machine#?$/.test(key2)){
+          midCol = ci; machCol = ci+1;
+        } else {
+          machCol = ci;
+          midCol = ci>0 ? ci-1 : ci;
+        }
       }
-    });
+      break;
+    }
     if(midCol===-1) return;
 
     let dayCols = null;
