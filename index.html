@@ -248,7 +248,7 @@ function pfNorm(s){
   if(!s) return null;
   s = s.toUpperCase();
   s = s.replace(/\([^)]*\)/g,'');
-  s = s.replace(/[^A-Z0-9]/g,'');
+  s = s.replace(/[^A-Z0-9\uAC00-\uD7A3]/g,''); // keep Korean too, so "단동9호" != bare "9"
   return s;
 }
 function pfBuildQridNorm(){
@@ -258,16 +258,23 @@ function pfBuildQridNorm(){
     const m = /^\d+$/.test(s.trim()) ? s.trim() : (s.match(/(\d+)$/) || [])[1];
     return m || null;
   }
+  // unconfirmed placeholder codes (still awaiting site confirmation) should never
+  // block or win a numeric-fallback match against a real, confirmed equipment code
+  function isPlaceholder(s){
+    return /^임시번호\d+$/.test(s) || /\(임시\)$/.test(s) || /확인필요/.test(s);
+  }
   EQUIP.forEach(e=>{
     const label = effectiveLabel(e.qrid);
     const k = pfNorm(label);
     (dict[k] = dict[k]||[]).push(label);
+    if(isPlaceholder(label)) return;
     const nk = numKey(label);
     if(nk) (byNumber[nk] = byNumber[nk]||[]).push(label);
   });
   Object.values(customEquipment).forEach(c=>{
     const k = pfNorm(c.qrid);
     (dict[k] = dict[k]||[]).push(c.qrid);
+    if(isPlaceholder(c.qrid)) return;
     const nk = numKey(c.qrid);
     if(nk) (byNumber[nk] = byNumber[nk]||[]).push(c.qrid);
   });
@@ -295,7 +302,7 @@ function pfMatchQrid(qridNormDict, eqid, eqname){
 
 function pfSplitMachineId(mid){
   const s = (mid||'').trim();
-  let m = s.match(/^(?:([가-힣]+)\s+)?((?:CL\s*-\s*\d+)|\d+)(?:\s+[A-Z]-?\d+)?\s*CNC\s*#?\s*-?\s*(\d+(?:\s*-\s*\d+)?)\s*(?:F\d)?$/i);
+  let m = s.match(/^(?:([가-힣]+)\s+)?(?:CL\s*-\s*)?(\d+)(?:\s+[A-Z]-?\d+)?\s*CNC\s*#?\s*-?\s*(\d+(?:\s*-\s*\d+)?)\s*(?:F\d)?$/i);
   if(m){
     const [,procKr,num,step] = m;
     return {eqname:'CNC', eqid:num.trim(), process:procKr||null, seq: step? step.replace(/\s*-\s*/g,'-').trim(): null};
