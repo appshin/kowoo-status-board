@@ -446,12 +446,25 @@ function pfParseWorkbook(wb){
   return {records, refDate};
 }
 
+// MSCL2900/3900 and closely related sheets route their generic "Key hole" and
+// "Heat" process steps through these two specific machines (per site confirmation)
+const KEYHOLE_HEAT_FAMILY = new Set(['MSCL2900', 'MSCL3900', 'TLQL NON', 'QXI']);
 function pfBuildDayIndex(records){
   const qridNormDict = pfBuildQridNorm();
   const idx = {};
   records.forEach(rec=>{
-    const split = pfSplitMachineId(rec.machine_id);
-    const qrid = pfMatchQrid(qridNormDict, split.eqid, split.eqname);
+    const midClean = (rec.machine_id||'').trim();
+    const prod = (rec.product||'').trim();
+    let eqid, eqname;
+    if(KEYHOLE_HEAT_FAMILY.has(prod) && midClean==='Key hole'){
+      eqid = 'CNM-04'; eqname = null;
+    } else if(KEYHOLE_HEAT_FAMILY.has(prod) && /^(Heat|High-Frequency)/i.test(midClean)){
+      eqid = 'HT-02'; eqname = null;
+    } else {
+      const split = pfSplitMachineId(rec.machine_id);
+      eqid = split.eqid; eqname = split.eqname;
+    }
+    const qrid = pfMatchQrid(qridNormDict, eqid, eqname);
     if(!qrid) return;
     idx[rec.day] = idx[rec.day] || {};
     idx[rec.day][qrid] = idx[rec.day][qrid] || {products:new Set(), qty:0};
