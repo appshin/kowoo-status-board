@@ -493,7 +493,14 @@ function pfWireBar(container, onChange){
   if(datePick) datePick.onchange = (e)=>{
     if(!e.target.value) return;
     const [y,m,d] = e.target.value.split('-').map(Number);
-    pfSelectedDate = new Date(y, m-1, d);
+    const picked = new Date(y, m-1, d);
+    const fy = pfRefDate.getFullYear(), fm = pfRefDate.getMonth();
+    if(picked.getFullYear()!==fy || picked.getMonth()!==fm){
+      toast(`이 실적파일은 ${fy}년 ${fm+1}월 데이터만 있습니다. 그 달의 날짜를 선택해주세요.`);
+      e.target.value = pfDateStr(pfSelectedDate);
+      return;
+    }
+    pfSelectedDate = picked;
     onChange();
   };
   const clearBtn = container.querySelector('#pfClearBtn');
