@@ -230,6 +230,10 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .worker-numpad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px;}
 .worker-numpad button{all:unset;box-sizing:border-box;text-align:center;padding:18px 0;background:#fff;border:1px solid #e3e1da;border-radius:12px;font-size:20px;font-weight:600;cursor:pointer;}
 .worker-numpad button:active{background:#f0efea;}
+.worker-hist-row{display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f7f6f2;border-radius:10px;padding:10px 12px;margin-bottom:8px;text-align:left;font-size:13px;}
+.worker-hist-row .info{flex:1;}
+.worker-hist-row .del-btn{all:unset;cursor:pointer;font-size:16px;padding:6px 10px;border-radius:8px;}
+.worker-hist-row .del-btn:active{background:#eee;}
 .pr-table tr.pr-eqfirst th.pr-rowhead, .pr-table tr.pr-eqfirst td, .pr-table tr.pr-eqfirst th.pr-shifthead{border-top:2px solid #d8d5cd;}
 .layout-marker.editable{cursor:grab;box-shadow:0 0 0 3px rgba(232,137,47,.5);}
 .layout-marker.editable:active{cursor:grabbing;}
@@ -1733,7 +1737,15 @@ async function workerUndo(main){
 }
 function renderWorkerEntry(main, mode){
   let stepHtml;
-  if(mode==='result' && workerLastSave){
+  if(mode==='history'){
+    stepHtml = `
+      <div class="worker-step" style="max-width:480px;">
+        <div class="worker-date">${workerTodayLabel()}</div>
+        <p class="worker-hint">오늘 입력한 내역입니다. 잘못 입력한 것은 삭제할 수 있습니다.</p>
+        <div id="workerHistoryList"><p style="color:#9aa3ad;font-size:13px;">불러오는 중...</p></div>
+        <button class="worker-linkbtn" id="backFromHistoryBtn">← 돌아가기</button>
+      </div>`;
+  } else if(mode==='result' && workerLastSave){
     const s = workerLastSave;
     stepHtml = `
       <div class="worker-step">
@@ -1745,6 +1757,7 @@ function renderWorkerEntry(main, mode){
         <button class="worker-linkbtn" id="changeProdBtn3">다른 품목으로 (같은 설비)</button>
         <button class="worker-linkbtn" id="changeEqBtn3">다른 설비 스캔</button>
         <button class="worker-linkbtn" id="undoBtn" style="color:var(--filestop);">🗑 방금 입력한 내용 삭제(잘못 입력함)</button>
+        <button class="worker-linkbtn" id="historyBtn2">오늘 입력내역 전체 보기</button>
       </div>`;
   } else if(!workerQrid){
     stepHtml = `
@@ -1752,6 +1765,7 @@ function renderWorkerEntry(main, mode){
         <div class="worker-date">${workerTodayLabel()}</div>
         <p class="worker-hint">설비에 붙어있는 <b>설비 QR코드</b>를 스캔해주세요.</p>
         <button class="worker-bigbtn" id="scanEqBtn">📷 설비 QR 스캔</button>
+        <button class="worker-linkbtn" id="historyBtn">오늘 입력내역 보기 / 잘못된 항목 삭제</button>
       </div>`;
   } else if(!workerProduct){
     stepHtml = `
@@ -1830,6 +1844,12 @@ function renderWorkerEntry(main, mode){
   };
   const undoBtn = document.getElementById('undoBtn');
   if(undoBtn) undoBtn.onclick = ()=>workerUndo(main);
+  ['historyBtn','historyBtn2'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.onclick = ()=>{ renderWorkerEntry(main, 'history'); loadWorkerHistory(main); };
+  });
+  const backFromHistoryBtn = document.getElementById('backFromHistoryBtn');
+  if(backFromHistoryBtn) backFromHistoryBtn.onclick = ()=>renderWorkerEntry(main);
 
   const numpad = document.getElementById('workerNumpad');
   if(numpad) numpad.querySelectorAll('button').forEach(b=>{
@@ -1853,6 +1873,64 @@ function renderWorkerEntry(main, mode){
     await workerSave(main, {withQty:false});
     if(saveNoQtyBtn) saveNoQtyBtn.disabled = false;
   };
+}
+
+async function loadWorkerHistory(main){
+  const listEl = document.getElementById('workerHistoryList');
+  if(!listEl || !db) return;
+  try{
+    const snap = await db.ref(`workerLog/${workerDateKey()}`).once('value');
+    const data = snap.exists() ? snap.val() : {};
+    const entries = [];
+    Object.entries(data).forEach(([qridKey, byPush])=>{
+      Object.entries(byPush).forEach(([pushKey, v])=>{
+        entries.push({qridKey, pushKey, ...v});
+      });
+    });
+    entries.sort((a,b)=>b.ts-a.ts);
+    if(!entries.length){
+      listEl.innerHTML = `<p style="color:#9aa3ad;font-size:13px;">오늘 입력한 내역이 없습니다.</p>`;
+      return;
+    }
+    listEl.innerHTML = entries.map(e=>{
+      const d = new Date(e.ts);
+      const p2 = n=>String(n).padStart(2,'0');
+      const timeStr = `${p2(d.getHours())}:${p2(d.getMinutes())}`;
+      return `<div class="worker-hist-row" data-qrid-key="${e.qridKey}" data-push-key="${e.pushKey}" data-ts="${e.ts}">
+        <div class="info">
+          <div class="mono" style="font-size:11px;color:#9aa3ad;">${timeStr}${e.worker?' · '+e.worker:''}</div>
+          <div>${effectiveLabel(e.qridKey)} · ${e.product} · <b>${fmt(e.qty)}개</b></div>
+        </div>
+        <button class="del-btn" title="삭제">🗑</button>
+      </div>`;
+    }).join('');
+    listEl.querySelectorAll('.worker-hist-row .del-btn').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const row = btn.closest('.worker-hist-row');
+        btn.disabled = true;
+        await deleteWorkerLogEntry(row.dataset.qridKey, row.dataset.pushKey, Number(row.dataset.ts));
+        loadWorkerHistory(main);
+      };
+    });
+  }catch(err){
+    console.error(err);
+    listEl.innerHTML = `<p style="color:var(--filestop);font-size:13px;">불러오기 실패</p>`;
+  }
+}
+async function deleteWorkerLogEntry(qridKey, pushKey, ts){
+  try{
+    await db.ref(`workerLog/${workerDateKey()}/${qridKey}/${pushKey}`).remove();
+    // only clear the equipment's live status if THIS was the exact action that
+    // set it (matching timestamp) - never blindly clear a newer, unrelated status
+    const snap = await db.ref('eqstatus/'+qridKey).once('value');
+    if(snap.exists() && snap.val() && snap.val().ts === ts){
+      await db.ref('eqstatus/'+qridKey).remove();
+    }
+    toast('삭제되었습니다.');
+  }catch(err){
+    console.error(err);
+    toast('삭제 실패 - 다시 시도해주세요.');
+  }
 }
 
 function renderQr(main){
