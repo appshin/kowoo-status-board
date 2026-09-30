@@ -1681,6 +1681,7 @@ function getBaseUrl(){
 }
 // ---------- Worker field entry (equipment QR -> product QR -> qty) ----------
 let workerQrid = null, workerProduct = null, workerQtyStr = '';
+let workerLastSave = null; // {qrid, product, qty, logKey} of the most recent save, for undo
 function workerDateKey(){
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -1696,11 +1697,56 @@ function parseEqFromScan(text){
   const candidate = m ? decodeURIComponent(m[1]) : text.trim();
   return EQUIP.find(e=>e.qrid===candidate) ? candidate : null;
 }
-function renderWorkerEntry(main){
-  const e = workerQrid ? EQUIP.find(x=>x.qrid===workerQrid) : null;
-
+async function workerSave(main, {withQty}){
+  const qty = withQty ? parseInt(workerQtyStr||'0', 10) : 0;
+  if(withQty && (!qty || qty<=0)){ toast('수량을 입력해주세요.'); return; }
+  const ts = Date.now();
+  const worker = (currentUser && currentUser.email) || '';
+  const ok1 = await saveStatus(workerQrid, {status:'run', product:workerProduct, qty, note:'', ts});
+  let logKey = null, ok2 = true;
+  try{
+    if(db && qty > 0){
+      const ref = await db.ref(`workerLog/${workerDateKey()}/${safeKey(workerQrid)}`).push({product:workerProduct, qty, ts, worker});
+      logKey = ref.key;
+    }
+  }catch(err){ console.error(err); ok2 = false; }
+  if(!ok1){ toast('저장 실패 - 다시 시도해주세요.'); return; }
+  toast(ok2 ? '저장되었습니다.' : '가동상태는 저장됐지만 실적 기록은 실패했습니다.');
+  workerLastSave = {qrid: workerQrid, product: workerProduct, qty, logKey};
+  renderWorkerEntry(main, 'result');
+}
+async function workerUndo(main){
+  if(!workerLastSave) return;
+  const {qrid, logKey} = workerLastSave;
+  try{
+    if(logKey) await db.ref(`workerLog/${workerDateKey()}/${safeKey(qrid)}/${logKey}`).remove();
+    await db.ref('eqstatus/'+safeKey(qrid)).remove();
+    toast('입력을 삭제했습니다.');
+  }catch(err){
+    console.error(err);
+    toast('삭제 실패 - 다시 시도해주세요.');
+    return;
+  }
+  workerLastSave = null;
+  workerQrid = null; workerProduct = null; workerQtyStr = '';
+  renderWorkerEntry(main);
+}
+function renderWorkerEntry(main, mode){
   let stepHtml;
-  if(!workerQrid){
+  if(mode==='result' && workerLastSave){
+    const s = workerLastSave;
+    stepHtml = `
+      <div class="worker-step">
+        <div class="worker-date">${workerTodayLabel()}</div>
+        <div class="big" style="font-size:34px;">✅</div>
+        <div class="worker-eq-badge">설비 : <b>${effectiveLabel(s.qrid)}</b> · 품목 : <b>${s.product}</b><br>
+          ${s.qty>0 ? `이번 입력 수량 : <b>${fmt(s.qty)}개</b>` : '수량 미입력 (가동 시작만 표시됨)'}</div>
+        <button class="worker-bigbtn" id="addMoreQtyBtn" style="background:var(--run);">➕ 생산수량 추가 입력</button>
+        <button class="worker-linkbtn" id="changeProdBtn3">다른 품목으로 (같은 설비)</button>
+        <button class="worker-linkbtn" id="changeEqBtn3">다른 설비 스캔</button>
+        <button class="worker-linkbtn" id="undoBtn" style="color:var(--filestop);">🗑 방금 입력한 내용 삭제(잘못 입력함)</button>
+      </div>`;
+  } else if(!workerQrid){
     stepHtml = `
       <div class="worker-step">
         <div class="worker-date">${workerTodayLabel()}</div>
@@ -1721,7 +1767,7 @@ function renderWorkerEntry(main){
       <div class="worker-step">
         <div class="worker-date">${workerTodayLabel()}</div>
         <div class="worker-eq-badge">설비 : <b>${effectiveLabel(workerQrid)}</b> · 품목 : <b>${workerProduct}</b></div>
-        <p class="worker-hint">생산한 수량을 입력해주세요.</p>
+        <p class="worker-hint">생산한 수량을 입력해주세요. <b>수량을 몰라도 "가동 시작만 알리기"로 먼저 저장</b>하고, 나중에 수량을 추가할 수 있습니다.</p>
         <div class="worker-qty-display" id="workerQtyDisplay">${workerQtyStr || '0'}<span class="unit">개</span></div>
         <div class="worker-numpad" id="workerNumpad">
           ${[1,2,3,4,5,6,7,8,9].map(n=>`<button data-n="${n}">${n}</button>`).join('')}
@@ -1729,7 +1775,8 @@ function renderWorkerEntry(main){
           <button data-n="0">0</button>
           <button data-n="back">⌫</button>
         </div>
-        <button class="worker-bigbtn" id="workerSaveBtn" style="background:var(--run);">✅ 저장</button>
+        <button class="worker-bigbtn" id="workerSaveBtn" style="background:var(--run);">✅ 수량 저장</button>
+        <button class="worker-linkbtn" id="workerSaveNoQtyBtn">수량 없이 가동 시작만 알리기 →</button>
         <button class="worker-linkbtn" id="changeProdBtn">품목 다시 스캔</button>
         <button class="worker-linkbtn" id="changeEqBtn2">다른 설비 스캔</button>
       </div>`;
@@ -1749,11 +1796,13 @@ function renderWorkerEntry(main){
       renderWorkerEntry(main);
     }, '설비 QR을 카메라에 비춰주세요');
   };
-  const changeEqBtn = document.getElementById('changeEqBtn') || document.getElementById('changeEqBtn2');
-  if(changeEqBtn) changeEqBtn.onclick = ()=>{
-    workerQrid = null; workerProduct = null; workerQtyStr = '';
-    renderWorkerEntry(main);
-  };
+  ['changeEqBtn','changeEqBtn2','changeEqBtn3'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.onclick = ()=>{
+      workerQrid = null; workerProduct = null; workerQtyStr = '';
+      renderWorkerEntry(main);
+    };
+  });
   const scanProdBtn2 = document.getElementById('scanProdBtn2');
   if(scanProdBtn2) scanProdBtn2.onclick = ()=>{
     startProductScan((data)=>{
@@ -1766,11 +1815,22 @@ function renderWorkerEntry(main){
       renderWorkerEntry(main);
     }, '품목 QR을 카메라에 비춰주세요');
   };
-  const changeProdBtn = document.getElementById('changeProdBtn');
-  if(changeProdBtn) changeProdBtn.onclick = ()=>{
-    workerProduct = null; workerQtyStr = '';
+  ['changeProdBtn','changeProdBtn3'].forEach(id=>{
+    const el = document.getElementById(id);
+    if(el) el.onclick = ()=>{
+      workerProduct = null; workerQtyStr = '';
+      renderWorkerEntry(main);
+    };
+  });
+  const addMoreQtyBtn = document.getElementById('addMoreQtyBtn');
+  if(addMoreQtyBtn) addMoreQtyBtn.onclick = ()=>{
+    // qrid/product are still set from the last save - just go back to the numpad
+    workerQtyStr = '';
     renderWorkerEntry(main);
   };
+  const undoBtn = document.getElementById('undoBtn');
+  if(undoBtn) undoBtn.onclick = ()=>workerUndo(main);
+
   const numpad = document.getElementById('workerNumpad');
   if(numpad) numpad.querySelectorAll('button').forEach(b=>{
     b.onclick = ()=>{
@@ -1783,24 +1843,15 @@ function renderWorkerEntry(main){
   });
   const saveBtn = document.getElementById('workerSaveBtn');
   if(saveBtn) saveBtn.onclick = async ()=>{
-    const qty = parseInt(workerQtyStr||'0', 10);
-    if(!qty || qty<=0){ toast('수량을 입력해주세요.'); return; }
     saveBtn.disabled = true; saveBtn.textContent = '저장 중...';
-    const ts = Date.now();
-    const worker = (currentUser && currentUser.email) || '';
-    const ok1 = await saveStatus(workerQrid, {status:'run', product:workerProduct, qty, note:'', ts});
-    let ok2 = true;
-    try{
-      if(db) await db.ref(`workerLog/${workerDateKey()}/${safeKey(workerQrid)}`).push({product:workerProduct, qty, ts, worker});
-    }catch(err){ console.error(err); ok2 = false; }
-    saveBtn.disabled = false; saveBtn.textContent = '✅ 저장';
-    if(ok1){
-      toast(ok2 ? '저장되었습니다.' : '가동상태는 저장됐지만 실적 기록은 실패했습니다.');
-      workerProduct = null; workerQtyStr = '';
-      renderWorkerEntry(main);
-    } else {
-      toast('저장 실패 - 다시 시도해주세요.');
-    }
+    await workerSave(main, {withQty:true});
+    saveBtn.disabled = false; saveBtn.textContent = '✅ 수량 저장';
+  };
+  const saveNoQtyBtn = document.getElementById('workerSaveNoQtyBtn');
+  if(saveNoQtyBtn) saveNoQtyBtn.onclick = async ()=>{
+    saveNoQtyBtn.disabled = true;
+    await workerSave(main, {withQty:false});
+    if(saveNoQtyBtn) saveNoQtyBtn.disabled = false;
   };
 }
 
