@@ -688,7 +688,6 @@ function pfRenderBar(onChange){
         <span class="mono" style="font-size:11px;color:#7c8493;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${pfFileName}</span>
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
-        <button class="btn ghost small" id="pfClearBtn">파일 데이터 끄기 (실시간으로 복귀)</button>
         ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다</span>` : ''}
       ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다 (실시간 수동입력 대신). 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
@@ -715,8 +714,6 @@ function pfWireBar(container, onChange){
     pfSelectedDate = picked;
     onChange();
   };
-  const clearBtn = container.querySelector('#pfClearBtn');
-  if(clearBtn) clearBtn.onclick = ()=>{ pfClear(); onChange(); };
 }
 // ==================== /실적 파일 pf* 끝 ====================
 
