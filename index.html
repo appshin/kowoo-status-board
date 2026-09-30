@@ -1901,15 +1901,20 @@ async function startProductScan(onResult, hintText){
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:#000;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;';
   overlay.innerHTML = `
-    <video id="scanVideo" style="width:100%;max-width:420px;border-radius:10px;" playsinline muted></video>
+    <div style="position:relative;width:100%;max-width:420px;">
+      <video id="scanVideo" style="width:100%;border-radius:10px;display:block;" playsinline muted></video>
+      <div id="scanGuide" style="position:absolute;border:3px solid #fff;border-radius:14px;box-shadow:0 0 0 2000px rgba(0,0,0,.45);pointer-events:none;"></div>
+    </div>
     <div style="color:#fff;font-size:13px;margin-top:14px;">${hintText || 'QR을 카메라에 비춰주세요'}</div>
+    <div style="color:#aaa;font-size:12px;margin-top:4px;">사각형 안에 QR 하나만 맞춰주세요. 다른 QR이 여러 개 보이면 가까이 다가가주세요.</div>
     <button id="scanCancel" style="margin-top:18px;padding:10px 20px;border-radius:8px;border:none;background:#444;color:#fff;font-size:13px;">취소</button>
   `;
   document.body.appendChild(overlay);
   const video = overlay.querySelector('#scanVideo');
+  const guide = overlay.querySelector('#scanGuide');
   overlay.querySelector('#scanCancel').onclick = ()=>{ stopScan(); overlay.remove(); };
   try{
-    scanStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    scanStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment', width:{ideal:1280}, height:{ideal:1280}}});
   }catch(e){
     toast('카메라를 열 수 없습니다 (권한 또는 https 필요).');
     overlay.remove();
@@ -1917,12 +1922,25 @@ async function startProductScan(onResult, hintText){
   }
   video.srcObject = scanStream;
   await video.play();
+  // size the visual guide box to a centered square (60% of the shorter side) and
+  // only decode that cropped region — this is what actually fixes multi-QR frames,
+  // since jsQR only ever sees the one code the person has lined up inside the box
+  const guideFrac = 0.6;
+  const side = Math.min(video.clientWidth, video.clientHeight) * guideFrac;
+  guide.style.width = side+'px';
+  guide.style.height = side+'px';
+  guide.style.left = ((video.clientWidth-side)/2)+'px';
+  guide.style.top = ((video.clientHeight-side)/2)+'px';
+
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   window.__scanTimer = setInterval(()=>{
     if(!video.videoWidth) return;
-    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const cropSide = Math.min(vw, vh) * guideFrac;
+    const sx = (vw-cropSide)/2, sy = (vh-cropSide)/2;
+    canvas.width = cropSide; canvas.height = cropSide;
+    ctx.drawImage(video, sx, sy, cropSide, cropSide, 0, 0, cropSide, cropSide);
     const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
     const code = jsQR(imgData.data, imgData.width, imgData.height);
     if(code && code.data){
