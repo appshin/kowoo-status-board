@@ -920,7 +920,7 @@ function exportLayoutOverrides(){
 const PAGES = [
   {id:'dash', label:'대시보드'},
   {id:'layout', label:'배치도 현황'},
-  {id:'prodreport', label:'설비별 생산실적'},
+  {id:'prodreport', label:'설비별 생산실적', desktopOnly:true},
   {id:'worker', label:'현장 입력', mobileOnly:true},
   {id:'qr', label:'설비 QR코드', desktopOnly:true},
   {id:'prodqr', label:'품목 QR코드', desktopOnly:true},
@@ -930,11 +930,16 @@ function isMobileDevice(){
 }
 function visiblePages(){
   const mobile = isMobileDevice();
-  return PAGES.filter(p=>{
+  const pages = PAGES.filter(p=>{
     if(p.mobileOnly && !mobile) return false;
     if(p.desktopOnly && mobile) return false;
     return true;
   });
+  if(mobile){
+    const i = pages.findIndex(p=>p.id==='worker');
+    if(i > 0){ const [w] = pages.splice(i,1); pages.unshift(w); }
+  }
+  return pages;
 }
 let currentPage = 'dash';
 let statusCache = {};
