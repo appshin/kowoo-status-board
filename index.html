@@ -181,6 +181,11 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .prod-row .name{font-weight:600;color:#333;}
 .prod-row .qty{font-family:'IBM Plex Mono',monospace;color:#2f8f5b;font-weight:700;}
 .prod-modal-total{margin-top:6px;padding-top:10px;border-top:2px solid #eee;display:flex;justify-content:space-between;font-size:14.5px;font-weight:700;}
+.pr-table{width:100%;border-collapse:collapse;font-size:13px;}
+.pr-table th{background:#f7f6f2;text-align:left;padding:9px 14px;border-bottom:1px solid #e3e1da;font-size:12px;color:#7c8493;}
+.pr-table td{padding:8px 14px;border-bottom:1px solid #f2f1ee;vertical-align:top;line-height:1.6;}
+.pr-table tr:last-child td{border-bottom:none;}
+.pr-table td.pr-empty{background:var(--filestop-bg);color:var(--filestop);font-weight:600;}
 .layout-marker.editable{cursor:grab;box-shadow:0 0 0 3px rgba(232,137,47,.5);}
 .layout-marker.editable:active{cursor:grabbing;}
 .layout-marker.custom{border:2px dashed #fff;box-shadow:0 0 0 2px var(--amber);}
@@ -246,6 +251,9 @@ let pfRefDate = null;       // Date anchoring the file's month
 let pfSelectedDate = null;  // Date currently shown
 let pfActive = false;       // true once a file has been loaded
 let pfFileName = '';
+let pfUploadedBy = '';
+let pfUploadedAt = 0;
+let pfEquipReport = null;
 
 function pfCellStr(v){
   if(v===null || v===undefined) return null;
@@ -440,18 +448,30 @@ function pfParseWorkbook(wb){
     }
     if(!dayCols) return;
 
-    let currentMid=null, currentMach=null;
+    let currentMid=null, currentMach=null, currentShift=null;
+    const occurrenceCount = {}; // per (stripped machine_id) block occurrence, for sheets with no explicit Day/Night text
     for(let ri=headerIdx+1; ri<rows.length; ri++){
       const r = rows[ri];
       const midVal = pfCellStr(r[midCol]);
       const machVal = machCol>=0 ? pfCellStr(r[machCol]) : null;
       if(midVal){
+        const shiftSrc = /\b(day|night)\s*$/i.test(midVal||'') ? midVal : (machVal||'');
+        const sm = shiftSrc.match(/\b(day|night)\s*$/i);
         currentMid = pfStripShift(midVal);
         currentMach = pfStripShift(machVal);
+        if(sm){
+          currentShift = sm[1].toLowerCase();
+        } else {
+          // no explicit Day/Night label on this row: fall back to the site's
+          // consistent convention of listing the Day block immediately before
+          // the Night block for the same machine, and alternate accordingly
+          const n = (occurrenceCount[currentMid] = (occurrenceCount[currentMid]||0) + 1);
+          currentShift = (n % 2 === 1) ? 'day' : 'night';
+        }
         Object.entries(dayCols).forEach(([day, ci])=>{
           const v = r[ci];
           if(pfIsNum(v) && v>0){
-            records.push({day: parseInt(day), product: name.trim(), machine_id: currentMid, machine: currentMach, qty: v});
+            records.push({day: parseInt(day), product: name.trim(), machine_id: currentMid, machine: currentMach, qty: v, shift: currentShift});
           }
         });
       }
@@ -525,6 +545,7 @@ async function pfHandleFile(file){
       : null;
     pfRefDate = fromFilename || fromSheet || new Date();
     pfDayIndex = pfBuildDayIndex(records);
+    pfEquipReport = pfBuildEquipmentReport(records);
     pfFileName = file.name;
     const today = new Date();
     if(today.getFullYear()===pfRefDate.getFullYear() && today.getMonth()===pfRefDate.getMonth()){
@@ -536,6 +557,9 @@ async function pfHandleFile(file){
     pfActive = true;
     const matchedQrids = new Set();
     Object.values(pfDayIndex).forEach(byQrid=>Object.keys(byQrid).forEach(q=>matchedQrids.add(q)));
+    pfUploadedBy = (firebase.auth().currentUser && firebase.auth().currentUser.email) || '';
+    pfUploadedAt = Date.now();
+    pfSaveSharedStatus().catch(err=>console.error('shared status save failed', err));
     toast(`${records.length}건의 일별 실적을 읽었습니다 (설비 ${matchedQrids.size}개 매칭됨).`);
     return true;
   }catch(err){
@@ -544,8 +568,90 @@ async function pfHandleFile(file){
     return false;
   }
 }
+function pfBuildEquipmentReport(records){
+  const qridNormDict = pfBuildQridNorm();
+  const report = {};
+  records.forEach(rec=>{
+    const midClean = (rec.machine_id||'').trim();
+    const prod = (rec.product||'').trim();
+    let eqid, eqname;
+    if(KEYHOLE_HEAT_FAMILY.has(prod) && midClean==='Key hole'){ eqid='CNM-04'; eqname=null; }
+    else if(KEYHOLE_HEAT_FAMILY.has(prod) && /^(Heat|High-Frequency)/i.test(midClean)){ eqid='HT-02'; eqname=null; }
+    else { const split = pfSplitMachineId(rec.machine_id); eqid=split.eqid; eqname=split.eqname; }
+    const qrid = pfMatchQrid(qridNormDict, eqid, eqname);
+    if(!qrid) return;
+    const shiftKey = rec.shift==='night' ? 'night' : 'day';
+    report[qrid] = report[qrid] || {};
+    report[qrid][rec.day] = report[qrid][rec.day] || {day:{}, night:{}};
+    const bucket = report[qrid][rec.day][shiftKey];
+    bucket[rec.product] = (bucket[rec.product]||0) + rec.qty;
+  });
+  return report;
+}
+
+async function pfSaveSharedStatus(){
+  if(!db || !pfDayIndex) return false;
+  const flatIndex = [];
+  Object.entries(pfDayIndex).forEach(([day, byQrid])=>{
+    Object.entries(byQrid).forEach(([qrid, data])=>{
+      flatIndex.push({day: parseInt(day), qrid, qty: data.qty, products: data.products});
+    });
+  });
+  const reportFlat = [];
+  Object.entries(pfEquipReport || {}).forEach(([qrid, byDay])=>{
+    Object.entries(byDay).forEach(([day, shifts])=>{
+      reportFlat.push({qrid, day: parseInt(day), day_: shifts.day, night_: shifts.night});
+    });
+  });
+  await db.ref('productivityFile/current').set({
+    fileName: pfFileName,
+    refDate: pfRefDate.toISOString(),
+    uploadedAt: pfUploadedAt,
+    uploadedBy: pfUploadedBy,
+    flatIndex,
+    reportFlat
+  });
+  return true;
+}
+async function pfLoadSharedStatus(){
+  if(!db) return false;
+  try{
+    const snap = await db.ref('productivityFile/current').once('value');
+    const data = snap.val();
+    if(!data || !data.flatIndex || !data.flatIndex.length) return false;
+    const idx = {};
+    data.flatIndex.forEach(({day, qrid, qty, products})=>{
+      idx[day] = idx[day] || {};
+      idx[day][qrid] = {qty, products};
+    });
+    pfDayIndex = idx;
+    const report = {};
+    (data.reportFlat||[]).forEach(({qrid, day, day_, night_})=>{
+      report[qrid] = report[qrid] || {};
+      report[qrid][day] = {day: day_||{}, night: night_||{}};
+    });
+    pfEquipReport = report;
+    pfRefDate = new Date(data.refDate);
+    pfFileName = data.fileName || '';
+    pfUploadedBy = data.uploadedBy || '';
+    pfUploadedAt = data.uploadedAt || 0;
+    const today = new Date();
+    if(today.getFullYear()===pfRefDate.getFullYear() && today.getMonth()===pfRefDate.getMonth()){
+      pfSelectedDate = today;
+    } else {
+      const days = Object.keys(pfDayIndex).map(Number).sort((a,b)=>b-a);
+      pfSelectedDate = new Date(pfRefDate.getFullYear(), pfRefDate.getMonth(), days[0]||1);
+    }
+    pfActive = true;
+    return true;
+  }catch(err){
+    console.error('shared status load failed', err);
+    return false;
+  }
+}
 function pfClear(){
   pfDayIndex = null; pfRefDate = null; pfSelectedDate = null; pfActive = false; pfFileName = '';
+  pfUploadedBy = ''; pfUploadedAt = 0; pfEquipReport = null;
 }
 function pfDateStr(d){
   const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0');
@@ -557,13 +663,19 @@ function pfStatusFor(qrid){
   const d = (pfDayIndex[day]||{})[qrid];
   return d ? {status:'run', product:Object.keys(d.products).join(', '), qty:d.qty, breakdown:d.products} : {status:'filestop', product:null, qty:0, breakdown:null};
 }
+function pfUploadedWhen(){
+  if(!pfUploadedAt) return '';
+  const d = new Date(pfUploadedAt);
+  const p2 = n=>String(n).padStart(2,'0');
+  return `${d.getMonth()+1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+}
 function pfRenderBar(onChange){
   const fileYear = pfRefDate ? pfRefDate.getFullYear() : null;
   const fileMonth = pfRefDate ? pfRefDate.getMonth() : null;
   const minDate = pfRefDate ? pfDateStr(new Date(fileYear, fileMonth, 1)) : '';
   const maxDate = pfRefDate ? pfDateStr(new Date(fileYear, fileMonth+1, 0)) : '';
   return `
-    <div class="toolbar" id="pfBar" style="background:#fff;border:1px solid #e3e1da;border-radius:10px;padding:10px 12px;">
+    <div class="toolbar" id="pfBar" style="background:#fff;border:1px solid #e3e1da;border-radius:10px;padding:10px 12px;flex-wrap:wrap;">
       <label class="mono" style="font-size:11px;color:#7c8493;">실적파일</label>
       <label class="btn ghost small" style="cursor:pointer;">${pfActive? '다른 파일 선택' : '엑셀 업로드'}<input type="file" id="pfFileInput" accept=".xlsx,.xls" style="display:none;"></label>
       ${pfActive ? `
@@ -571,7 +683,8 @@ function pfRenderBar(onChange){
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
         <button class="btn ghost small" id="pfClearBtn">파일 데이터 끄기 (실시간으로 복귀)</button>
-      ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다 (실시간 수동입력 대신).</span>`}
+        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다</span>` : ''}
+      ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다 (실시간 수동입력 대신). 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
 }
@@ -746,6 +859,7 @@ function exportLayoutOverrides(){
 const PAGES = [
   {id:'dash', label:'대시보드'},
   {id:'layout', label:'배치도 현황'},
+  {id:'prodreport', label:'설비별 생산실적'},
   {id:'qr', label:'설비 QR코드'},
   {id:'prodqr', label:'품목 QR코드'},
 ];
@@ -847,6 +961,7 @@ async function render(){
   else if(currentPage==='layout') await renderLayoutMap(main);
   else if(currentPage==='qr') renderQr(main);
   else if(currentPage==='prodqr') renderProductQr(main);
+  else if(currentPage==='prodreport') renderProdReport(main);
 }
 
 // ---------- Dashboard ----------
@@ -1344,6 +1459,107 @@ async function renderInputPage(key){
   };
 }
 
+// ---------- Equipment production report ----------
+let prodReportQrid = null;
+function daysInMonth(refDate){
+  return new Date(refDate.getFullYear(), refDate.getMonth()+1, 0).getDate();
+}
+function fmtBreakdown(bucket){
+  const entries = Object.entries(bucket||{});
+  if(!entries.length) return '';
+  return entries.sort((a,b)=>b[1]-a[1]).map(([p,q])=>`${p} ${fmt(q)}개`).join('<br>');
+}
+async function renderProdReport(main){
+  main.innerHTML = `<div id="pfBarWrap3"></div><div id="prodReportBody">불러오는 중...</div>`;
+  document.getElementById('pfBarWrap3').innerHTML = pfRenderBar();
+  pfWireBar(document.getElementById('pfBarWrap3'), ()=>{ renderProdReport(main); });
+  const body = document.getElementById('prodReportBody');
+
+  if(!pfActive || !pfEquipReport){
+    body.innerHTML = `<div class="card" style="margin-top:16px;"><p style="color:#7c8493;font-size:13.5px;">
+      위에서 생산실적 엑셀 파일을 먼저 올려주세요. 설비고유번호별로 날짜·주야 구분 생산실적을 정리해서 보여드립니다.</p></div>`;
+    return;
+  }
+
+  const qridsWithData = Object.keys(pfEquipReport).sort();
+  if(!prodReportQrid || !qridsWithData.includes(prodReportQrid)){
+    prodReportQrid = qridsWithData[0] || null;
+  }
+  const byBuilding = {};
+  EQUIP.forEach(e=>{
+    if(!qridsWithData.includes(e.qrid)) return;
+    (byBuilding[e.building] = byBuilding[e.building]||[]).push(e.qrid);
+  });
+
+  const nDays = daysInMonth(pfRefDate);
+  const data = prodReportQrid ? (pfEquipReport[prodReportQrid]||{}) : {};
+
+  let rowsHtml = '';
+  for(let d=1; d<=nDays; d++){
+    const dayBucket = (data[d]||{}).day || {};
+    const nightBucket = (data[d]||{}).night || {};
+    const dayEmpty = !Object.keys(dayBucket).length;
+    const nightEmpty = !Object.keys(nightBucket).length;
+    rowsHtml += `<tr>
+      <td class="mono" style="font-weight:700;">${pfRefDate.getMonth()+1}/${d}</td>
+      <td class="${dayEmpty?'pr-empty':''}">${dayEmpty? '가동없음' : fmtBreakdown(dayBucket)}</td>
+      <td class="${nightEmpty?'pr-empty':''}">${nightEmpty? '가동없음' : fmtBreakdown(nightBucket)}</td>
+    </tr>`;
+  }
+
+  body.innerHTML = `
+    <div class="toolbar" style="margin-top:12px;">
+      <label class="mono" style="font-size:11px;color:#7c8493;">설비</label>
+      <select id="prodReportSelect" style="min-width:220px;">
+        ${Object.entries(byBuilding).map(([b, qrids])=>`
+          <optgroup label="${b}">
+            ${qrids.map(q=>`<option value="${q}" ${q===prodReportQrid?'selected':''}>${effectiveLabel(q)}</option>`).join('')}
+          </optgroup>`).join('')}
+      </select>
+      <button class="btn ghost small" id="prodReportExportBtn" style="margin-left:auto;">전체 설비 엑셀로 다운로드</button>
+    </div>
+    <div class="card" style="margin-top:12px;padding:0;overflow:hidden;">
+      <table class="pr-table">
+        <thead><tr><th style="width:80px;">날짜</th><th>주간</th><th>야간</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>
+    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">빨간 바탕("가동없음")은 그 교대시간에 실적이 없었던 날입니다. 인원/설비 문제 등으로 자주 비가동이면 원인 확인이 필요합니다.</p>
+  `;
+  document.getElementById('prodReportSelect').onchange = (e)=>{
+    prodReportQrid = e.target.value;
+    renderProdReport(main);
+  };
+  document.getElementById('prodReportExportBtn').onclick = exportProdReportExcel;
+}
+function exportProdReportExcel(){
+  const rows = [];
+  const nDays = daysInMonth(pfRefDate);
+  Object.keys(pfEquipReport).sort().forEach(qrid=>{
+    const data = pfEquipReport[qrid];
+    for(let d=1; d<=nDays; d++){
+      const dayBucket = (data[d]||{}).day || {};
+      const nightBucket = (data[d]||{}).night || {};
+      const dayEmpty = !Object.keys(dayBucket).length;
+      const nightEmpty = !Object.keys(nightBucket).length;
+      rows.push({
+        '설비고유번호': effectiveLabel(qrid),
+        '날짜': `${pfRefDate.getFullYear()}-${String(pfRefDate.getMonth()+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`,
+        '주간 제품/수량': dayEmpty ? '' : Object.entries(dayBucket).map(([p,q])=>`${p} ${Math.round(q)}`).join(', '),
+        '주간 상태': dayEmpty ? '가동없음' : '가동',
+        '야간 제품/수량': nightEmpty ? '' : Object.entries(nightBucket).map(([p,q])=>`${p} ${Math.round(q)}`).join(', '),
+        '야간 상태': nightEmpty ? '가동없음' : '가동',
+      });
+    }
+  });
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{wch:20},{wch:12},{wch:30},{wch:10},{wch:30},{wch:10}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, '설비별 생산실적');
+  const fname = `설비별_생산실적_${pfRefDate.getFullYear()}${String(pfRefDate.getMonth()+1).padStart(2,'0')}.xlsx`;
+  XLSX.writeFile(wb, fname);
+}
+
 // ---------- QR management ----------
 function getBaseUrl(){
   return localStorage.getItem('kowoo_qr_baseurl') || (location.origin + location.pathname);
@@ -1478,13 +1694,21 @@ async function startProductScan(onResult){
 }
 
 // ---------- Init ----------
+let pfSharedLoadAttempted = false;
+async function initialLoad(user){
+  if(!pfSharedLoadAttempted && user){
+    pfSharedLoadAttempted = true;
+    if(!pfActive) await pfLoadSharedStatus().catch(err=>console.error(err));
+  }
+  render();
+}
 if(FIREBASE_CONFIGURED){
   auth.onAuthStateChanged(user=>{
     currentUser = user;
-    render();
+    initialLoad(user);
   });
 } else {
-  render();
+  initialLoad(null);
 }
 
 </script>
