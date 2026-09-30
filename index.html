@@ -168,6 +168,19 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .layout-marker.tt-left .layout-tooltip{left:auto;right:0;transform:none;}
 .layout-marker.tt-right .layout-tooltip{left:0;transform:none;}
 .layout-marker:hover .layout-tooltip{opacity:1;}
+.prod-modal-backdrop{position:fixed;inset:0;background:rgba(20,22,28,.55);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px;}
+.prod-modal{background:#fff;border-radius:14px;max-width:420px;width:100%;max-height:80vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3);}
+.prod-modal-head{padding:18px 20px 12px;border-bottom:1px solid #eee;display:flex;justify-content:space-between;align-items:flex-start;}
+.prod-modal-head h3{margin:0;font-size:17px;}
+.prod-modal-head .sub{font-size:12px;color:#8a8f98;margin-top:3px;}
+.prod-modal-close{all:unset;cursor:pointer;font-size:20px;color:#9aa3ad;padding:2px 6px;border-radius:6px;}
+.prod-modal-close:hover{background:#f0f0ef;color:#333;}
+.prod-modal-body{padding:14px 20px 20px;}
+.prod-row{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid #f2f1ee;font-size:14px;}
+.prod-row:last-child{border-bottom:none;}
+.prod-row .name{font-weight:600;color:#333;}
+.prod-row .qty{font-family:'IBM Plex Mono',monospace;color:#2f8f5b;font-weight:700;}
+.prod-modal-total{margin-top:6px;padding-top:10px;border-top:2px solid #eee;display:flex;justify-content:space-between;font-size:14.5px;font-weight:700;}
 .layout-marker.editable{cursor:grab;box-shadow:0 0 0 3px rgba(232,137,47,.5);}
 .layout-marker.editable:active{cursor:grabbing;}
 .layout-marker.custom{border:2px dashed #fff;box-shadow:0 0 0 2px var(--amber);}
@@ -474,8 +487,8 @@ function pfBuildDayIndex(records){
     const qrid = pfMatchQrid(qridNormDict, eqid, eqname);
     if(!qrid) return;
     idx[rec.day] = idx[rec.day] || {};
-    idx[rec.day][qrid] = idx[rec.day][qrid] || {products:new Set(), qty:0};
-    idx[rec.day][qrid].products.add(rec.product);
+    idx[rec.day][qrid] = idx[rec.day][qrid] || {products:{}, qty:0};
+    idx[rec.day][qrid].products[rec.product] = (idx[rec.day][qrid].products[rec.product]||0) + rec.qty;
     idx[rec.day][qrid].qty += rec.qty;
   });
   return idx;
@@ -542,7 +555,7 @@ function pfStatusFor(qrid){
   if(!pfActive || !pfSelectedDate) return null;
   const day = pfSelectedDate.getDate();
   const d = (pfDayIndex[day]||{})[qrid];
-  return d ? {status:'run', product:[...d.products].join(', '), qty:d.qty} : {status:'filestop', product:null, qty:0};
+  return d ? {status:'run', product:Object.keys(d.products).join(', '), qty:d.qty, breakdown:d.products} : {status:'filestop', product:null, qty:0, breakdown:null};
 }
 function pfRenderBar(onChange){
   const fileYear = pfRefDate ? pfRefDate.getFullYear() : null;
@@ -994,7 +1007,7 @@ async function renderLayoutMap(main){
         }).join('')}
       </div>
       </div>
-      <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">${editMode? '점: 드래그=이동, 클릭=번호수정. 빈 곳 클릭=새 설비 등록.' : '점을 클릭하면 그 설비의 입력화면으로 이동합니다.'} 확대/축소는 위 +/− 버튼을 이용하세요.</p>
+      <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">${editMode? '점: 드래그=이동, 클릭=번호수정. 빈 곳 클릭=새 설비 등록.' : '초록색 점을 클릭하면 생산 실적을, 빨간색 점을 클릭하면 입력화면을 보여줍니다.'} 확대/축소는 위 +/− 버튼을 이용하세요.</p>
     `;
     const wrap = document.getElementById('layoutImgWrap');
     const scrollEl = document.getElementById('layoutScroll');
@@ -1036,8 +1049,13 @@ async function renderLayoutMap(main){
       } else if(el.dataset.kind==='builtin') {
         el.onclick = ()=>{
           const key = el.dataset.key;
-          history.pushState(null,'', `?eq=${encodeURIComponent(key)}`);
-          renderInputPage(key);
+          const pf = pfActive ? pfStatusFor(key) : null;
+          if(pf && pf.status==='run'){
+            showProductionModal(key, pf);
+          } else {
+            history.pushState(null,'', `?eq=${encodeURIComponent(key)}`);
+            renderInputPage(key);
+          }
         };
       }
     });
@@ -1154,6 +1172,39 @@ function renderEqCard(e){
       <div class="meta ${stale?'stale':''}">${metaLine} ${stale?'⚠':''}</div>
     </div>
   `;
+}
+function showProductionModal(qrid, pf){
+  const existing = document.getElementById('prodModalBackdrop');
+  if(existing) existing.remove();
+  const label = effectiveLabel(qrid);
+  const rows = Object.entries(pf.breakdown || {})
+    .sort((a,b)=>b[1]-a[1])
+    .map(([prod,qty])=>`<div class="prod-row"><span class="name">${prod}</span><span class="qty">${fmt(qty)}개</span></div>`)
+    .join('');
+  const backdrop = document.createElement('div');
+  backdrop.className = 'prod-modal-backdrop';
+  backdrop.id = 'prodModalBackdrop';
+  backdrop.innerHTML = `
+    <div class="prod-modal" role="dialog" aria-modal="true">
+      <div class="prod-modal-head">
+        <div>
+          <h3>${label}</h3>
+          <div class="sub">${pfDateStr(pfSelectedDate)} · 가동중 · 생산 실적</div>
+        </div>
+        <button class="prod-modal-close" id="prodModalCloseBtn" aria-label="닫기">&times;</button>
+      </div>
+      <div class="prod-modal-body">
+        ${rows || '<div style="color:#9aa3ad;font-size:13px;">제품별 상세 내역이 없습니다.</div>'}
+        <div class="prod-modal-total"><span>합계</span><span>${fmt(pf.qty)}개</span></div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  const close = ()=> backdrop.remove();
+  document.getElementById('prodModalCloseBtn').onclick = close;
+  backdrop.onclick = (e)=>{ if(e.target===backdrop) close(); };
+  const escHandler = (e)=>{ if(e.key==='Escape'){ close(); document.removeEventListener('keydown', escHandler); } };
+  document.addEventListener('keydown', escHandler);
 }
 function fmt(n){ return Math.round(n).toLocaleString('ko-KR'); }
 function shortLabel(qrid){
