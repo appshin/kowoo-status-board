@@ -18,6 +18,7 @@
   --ink:#15181d; --graphite:#1c2128; --paper:#f3f2ee; --paper-2:#ffffff;
   --amber:#e8892f; --amber-dim:#c76f1e;
   --run:#3f9d5e; --run-bg:#e3f3e6;
+  --live:#2f6fed; --live-bg:#e4ecfd;
   --setup:#c98a1f; --setup-bg:#faf1de;
   --stop:#9aa0a8; --stop-bg:#eceae5;
   --filestop:#d5453a; --filestop-bg:#fbe5e3;
@@ -65,6 +66,7 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 }
 .eq-card:hover{transform:translateY(-1px);}
 .eq-card.run{background:var(--run-bg);border-color:#bfe2c7;}
+.eq-card.live{background:var(--live-bg);border-color:#b7c9f7;}
 .eq-card.setup{background:var(--setup-bg);border-color:#ecd9a8;}
 .eq-card.stop{background:var(--stop-bg);border-color:#d8d5cd;}
 .eq-card.filestop{background:var(--filestop-bg);border-color:#eab3a8;}
@@ -73,6 +75,7 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .eq-card .eqid{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:13px;}
 .eq-card .status-dot{width:10px;height:10px;border-radius:50%;flex:0 0 auto;margin-top:3px;}
 .status-dot.run{background:var(--run);}
+.status-dot.live{background:var(--live);}
 .status-dot.setup{background:var(--setup);}
 .status-dot.stop{background:var(--stop);}
 .status-dot.filestop{background:var(--filestop);}
@@ -152,6 +155,7 @@ button.btn.small{padding:6px 11px;font-size:12px;}
   word-break:break-all;
 }
 .layout-marker.run{background:var(--run);}
+.layout-marker.live{background:var(--live);box-shadow:0 0 0 3px rgba(47,111,237,.35), 0 2px 6px rgba(0,0,0,.5);}
 .layout-marker.setup{background:var(--setup);}
 .layout-marker.stop{background:var(--stop);}
 .layout-marker.filestop{background:var(--filestop);}
@@ -191,6 +195,19 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .pr-table.pr-wide th, .pr-table.pr-wide td{padding:8px 10px;font-size:12.5px;}
 .pr-table .pr-rowhead{position:sticky;left:0;background:#f7f6f2;z-index:2;font-weight:700;text-align:left;min-width:100px;}
 .pr-table .pr-shifthead{position:sticky;left:100px;background:#faf9f6;z-index:2;font-weight:600;text-align:left;min-width:52px;color:#7c8493;}
+.worker-wrap{display:flex;justify-content:center;padding:24px 12px;}
+.worker-step{width:100%;max-width:420px;text-align:center;}
+.worker-date{font-family:'IBM Plex Mono',monospace;font-size:13px;color:#7c8493;margin-bottom:10px;}
+.worker-eq-badge{background:#f7f6f2;border-radius:10px;padding:12px 14px;font-size:14.5px;margin-bottom:18px;}
+.worker-hint{font-size:14px;color:#555;margin-bottom:18px;}
+.worker-bigbtn{all:unset;display:block;width:100%;box-sizing:border-box;background:var(--ink);color:#fff;font-size:17px;font-weight:700;padding:20px;border-radius:14px;cursor:pointer;text-align:center;margin-bottom:12px;}
+.worker-bigbtn:active{opacity:.8;}
+.worker-linkbtn{all:unset;display:block;width:100%;text-align:center;color:#7c8493;font-size:13px;padding:8px;cursor:pointer;text-decoration:underline;}
+.worker-qty-display{font-family:'IBM Plex Mono',monospace;font-size:40px;font-weight:700;color:var(--ink);background:#f7f6f2;border-radius:14px;padding:20px;margin-bottom:16px;}
+.worker-qty-display .unit{font-size:18px;color:#9aa3ad;margin-left:6px;}
+.worker-numpad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px;}
+.worker-numpad button{all:unset;box-sizing:border-box;text-align:center;padding:18px 0;background:#fff;border:1px solid #e3e1da;border-radius:12px;font-size:20px;font-weight:600;cursor:pointer;}
+.worker-numpad button:active{background:#f0efea;}
 .pr-table tr.pr-eqfirst th.pr-rowhead, .pr-table tr.pr-eqfirst td, .pr-table tr.pr-eqfirst th.pr-shifthead{border-top:2px solid #d8d5cd;}
 .layout-marker.editable{cursor:grab;box-shadow:0 0 0 3px rgba(232,137,47,.5);}
 .layout-marker.editable:active{cursor:grabbing;}
@@ -737,6 +754,25 @@ function isStale(ts, hours=4){
   if(!ts) return false;
   return (Date.now()-ts) > hours*3600*1000;
 }
+function isToday(ts){
+  if(!ts) return false;
+  const a = new Date(ts), b = new Date();
+  return a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
+}
+// Combines the Excel-file-based historical status (for whatever date is selected)
+// with today's live field-entry status. Live "running today" entries are shown as
+// a distinct blue tier layered on top, regardless of which date the file view is
+// showing — they never overwrite or hide the underlying file-based data.
+function combinedStatus(qrid){
+  const pf = pfStatusFor(qrid);
+  const live = statusCache[qrid];
+  const liveToday = pfActive && live && live.status==='run' && isToday(live.ts);
+  if(liveToday){
+    return {tier:'live', status:'live', product: live.product, qty: live.qty, ts: live.ts, pf, live};
+  }
+  if(pf) return {tier:'pf', status: pf.status, product: pf.product, qty: pf.qty, breakdown: pf.breakdown, pf, live};
+  return {tier:'realtime', status: live?.status || 'nodata', product: live?.product, ts: live?.ts, pf, live};
+}
 function safeKey(key){
   // Firebase RTDB paths can't contain . # $ [ ] /
   return key.replace(/[.#$/\[\]]/g, '_');
@@ -863,6 +899,7 @@ const PAGES = [
   {id:'dash', label:'대시보드'},
   {id:'layout', label:'배치도 현황'},
   {id:'prodreport', label:'설비별 생산실적'},
+  {id:'worker', label:'현장 입력'},
   {id:'qr', label:'설비 QR코드'},
   {id:'prodqr', label:'품목 QR코드'},
 ];
@@ -965,6 +1002,7 @@ async function render(){
   else if(currentPage==='qr') renderQr(main);
   else if(currentPage==='prodqr') renderProductQr(main);
   else if(currentPage==='prodreport') renderProdReport(main);
+  else if(currentPage==='worker') renderWorkerEntry(main);
 }
 
 // ---------- Dashboard ----------
@@ -976,6 +1014,7 @@ async function renderDash(main){
   document.getElementById('legend').innerHTML = pfActive ? `
     <span><span class="dot" style="background:var(--run);"></span>가동중 (그 날 실적 있음)</span>
     <span><span class="dot" style="background:var(--filestop);"></span>비가동 (그 날 실적 없음)</span>
+    <span><span class="dot" style="background:var(--live);"></span>현장입력으로 지금 가동중 (날짜 무관)</span>
     <span style="margin-left:auto;font-size:11px;color:#9aa3ad;">기준월: ${pfRefDate.getFullYear()}년 ${pfRefDate.getMonth()+1}월 · 실적파일 기준</span>
   ` : `
     <span><span class="dot" style="background:var(--run);"></span>가동중</span>
@@ -991,7 +1030,10 @@ async function renderDash(main){
     if(!body) return;
     body.innerHTML = BUILDINGS.map(b=>{
       const items = EQUIP.filter(e=>e.building===b);
-      const runCount = items.filter(e=>(pfStatusFor(e.qrid)||statusCache[e.qrid])?.status==='run').length;
+      const runCount = items.filter(e=>{
+        const cs = combinedStatus(e.qrid);
+        return cs.status==='run' || cs.status==='live';
+      }).length;
       return `
         <div class="bgroup">
           <h2>${b} <span class="cnt">${runCount}/${items.length}대 가동중</span></h2>
@@ -1053,6 +1095,7 @@ async function renderLayoutMap(main){
   document.getElementById('legend2').innerHTML = pfActive ? `
     <span><span class="dot" style="background:var(--run);"></span>가동중 (그 날 실적 있음)</span>
     <span><span class="dot" style="background:var(--filestop);"></span>비가동 (그 날 실적 없음)</span>
+    <span><span class="dot" style="background:var(--live);"></span>현장입력으로 지금 가동중 (날짜 무관)</span>
     <span style="margin-left:auto;font-size:11px;color:#9aa3ad;">기준월: ${pfRefDate.getFullYear()}년 ${pfRefDate.getMonth()+1}월 · 실적파일 기준</span>
   ` : `
     <span><span class="dot" style="background:var(--run);"></span>가동중</span>
@@ -1098,29 +1141,27 @@ async function renderLayoutMap(main){
         <img src="data:image/webp;base64,${img}" alt="${layoutTab} 배치도" draggable="false">
         ${items.map(e=>{
           const c = effectiveCoords(e.qrid);
-          const pf = pfStatusFor(e.qrid);
-          const s = pf || statusCache[e.qrid];
-          const status = s?.status || 'nodata';
-          const stale = !pf && s && isStale(s.ts);
-          const label = {run:'가동중', setup:'셋업/교체중', stop:'정지', nodata:'보고 없음', filestop:'비가동(실적없음)'}[status];
+          const cs = combinedStatus(e.qrid);
+          const status = cs.status;
+          const stale = cs.tier==='realtime' && cs.live && isStale(cs.live.ts);
+          const label = {run:'가동중', live:'가동중 (현장입력, 지금)', setup:'셋업/교체중', stop:'정지', nodata:'보고 없음', filestop:'비가동(실적없음)'}[status];
           const prodList = e.productivity_products;
           const prodLine = (!pfActive && prodList) ? `<br><span style="color:#ffd699;">생산제품: ${prodList.join(', ')}</span>` : '';
           const dispLabel = effectiveLabel(e.qrid);
-          const qtyLine = (pf && pf.status==='run') ? ` · ${fmt(pf.qty)}개` : '';
+          const qtyLine = (status==='run' || status==='live') && cs.qty ? ` · ${fmt(cs.qty)}개` : '';
           return `<div class="layout-marker ${status} ${stale?'stale':''} ${editMode?'editable':''}" style="left:${c.x}%;top:${c.y}%;" data-key="${e.qrid}" data-kind="builtin">
             <span class="marker-label">${shortLabel(dispLabel)}</span>
-            <div class="layout-tooltip">${dispLabel} · ${s?.product || label}${qtyLine}${stale?' ⚠':''}${prodLine}</div>
+            <div class="layout-tooltip">${dispLabel} · ${cs.product || label}${qtyLine}${stale?' ⚠':''}${prodLine}</div>
           </div>`;
         }).join('')}
         ${customItems.map(e=>{
-          const pf = pfStatusFor(e.qrid);
-          const s = pf || statusCache[e.qrid];
-          const status = s?.status || 'nodata';
-          const label = {run:'가동중', setup:'셋업/교체중', stop:'정지', nodata:'보고 없음', filestop:'비가동(실적없음)'}[status];
-          const qtyLine = (pf && pf.status==='run') ? ` · ${fmt(pf.qty)}개` : '';
+          const cs = combinedStatus(e.qrid);
+          const status = cs.status;
+          const label = {run:'가동중', live:'가동중 (현장입력, 지금)', setup:'셋업/교체중', stop:'정지', nodata:'보고 없음', filestop:'비가동(실적없음)'}[status];
+          const qtyLine = (status==='run' || status==='live') && cs.qty ? ` · ${fmt(cs.qty)}개` : '';
           return `<div class="layout-marker ${status} custom ${editMode?'editable':''}" style="left:${e.x}%;top:${e.y}%;" data-key="${e.qrid}" data-kind="custom" data-record="${e.recordKey}">
             <span class="marker-label">${shortLabel(e.qrid)}</span>
-            <div class="layout-tooltip">${e.qrid} (직접등록) · ${s?.product || label}${qtyLine}</div>
+            <div class="layout-tooltip">${e.qrid} (직접등록) · ${cs.product || label}${qtyLine}</div>
           </div>`;
         }).join('')}
       </div>
@@ -1167,9 +1208,11 @@ async function renderLayoutMap(main){
       } else if(el.dataset.kind==='builtin') {
         el.onclick = ()=>{
           const key = el.dataset.key;
-          const pf = pfActive ? pfStatusFor(key) : null;
-          if(pf && pf.status==='run'){
-            showProductionModal(key, pf);
+          const cs = combinedStatus(key);
+          if(cs.tier==='live'){
+            showProductionModal(key, {qty: cs.qty, breakdown: {[cs.product]: cs.qty}, live:true});
+          } else if(cs.tier==='pf' && cs.status==='run'){
+            showProductionModal(key, cs.pf);
           } else {
             history.pushState(null,'', `?eq=${encodeURIComponent(key)}`);
             renderInputPage(key);
@@ -1273,12 +1316,13 @@ async function renderLayoutMap(main){
 
 
 function renderEqCard(e){
-  const pf = pfStatusFor(e.qrid);
-  const s = pf || statusCache[e.qrid];
-  const status = s?.status || 'nodata';
-  const stale = !pf && s && isStale(s.ts);
-  const label = {run:'가동중', setup:'셋업/교체중', stop:'정지', nodata:'보고 없음', filestop:'비가동(실적없음)'}[status];
-  const metaLine = pf ? (pf.status==='run' ? `${fmt(pf.qty)}개` : pfDateStr(pfSelectedDate)) : (s?fmtAgo(s.ts):'-');
+  const cs = combinedStatus(e.qrid);
+  const status = cs.status;
+  const stale = cs.tier==='realtime' && cs.live && isStale(cs.live.ts);
+  const label = {run:'가동중', live:'가동중 (현장입력, 지금)', setup:'셋업/교체중', stop:'정지', nodata:'보고 없음', filestop:'비가동(실적없음)'}[status];
+  const metaLine = cs.tier==='live' ? `${fmt(cs.qty)}개 · 방금 현장입력됨`
+    : cs.tier==='pf' ? (cs.status==='run' ? `${fmt(cs.qty)}개` : pfDateStr(pfSelectedDate))
+    : (cs.live ? fmtAgo(cs.live.ts) : '-');
   return `
     <div class="eq-card ${status}" data-key="${e.qrid}">
       <div class="top">
@@ -1286,7 +1330,7 @@ function renderEqCard(e){
         <div class="status-dot ${status}"></div>
       </div>
       <div class="eqname">${e.eqname}</div>
-      <div class="prod">${s?.product ? s.product : label}</div>
+      <div class="prod">${cs.product ? cs.product : label}</div>
       <div class="meta ${stale?'stale':''}">${metaLine} ${stale?'⚠':''}</div>
     </div>
   `;
@@ -1307,7 +1351,7 @@ function showProductionModal(qrid, pf){
       <div class="prod-modal-head">
         <div>
           <h3>${label}</h3>
-          <div class="sub">${pfDateStr(pfSelectedDate)} · 가동중 · 생산 실적</div>
+          <div class="sub">${pf.live ? '지금 · 현장입력 · 가동중' : pfDateStr(pfSelectedDate)+' · 가동중 · 생산 실적'}</div>
         </div>
         <button class="prod-modal-close" id="prodModalCloseBtn" aria-label="닫기">&times;</button>
       </div>
@@ -1436,7 +1480,7 @@ async function renderInputPage(key){
         toast('목록에 없는 품목입니다 - 직접입력에 채워넣었습니다.');
       }
       syncOther();
-    });
+    }, '품목 QR을 카메라에 비춰주세요');
   };
 
   document.getElementById('backBtn').onclick = ()=>{ location.href = location.pathname; };
@@ -1588,6 +1632,131 @@ async function exportProdReportExcel(){
 function getBaseUrl(){
   return localStorage.getItem('kowoo_qr_baseurl') || (location.origin + location.pathname);
 }
+// ---------- Worker field entry (equipment QR -> product QR -> qty) ----------
+let workerQrid = null, workerProduct = null, workerQtyStr = '';
+function workerDateKey(){
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function workerTodayLabel(){
+  const d = new Date();
+  const days = ['일','월','화','수','목','금','토'];
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')} (${days[d.getDay()]})`;
+}
+function parseEqFromScan(text){
+  // equipment QR encodes a full URL like <base>?eq=<qrid>; accept a bare qrid too
+  const m = text.match(/[?&]eq=([^&]+)/);
+  const candidate = m ? decodeURIComponent(m[1]) : text.trim();
+  return EQUIP.find(e=>e.qrid===candidate) ? candidate : null;
+}
+function renderWorkerEntry(main){
+  const e = workerQrid ? EQUIP.find(x=>x.qrid===workerQrid) : null;
+
+  let stepHtml;
+  if(!workerQrid){
+    stepHtml = `
+      <div class="worker-step">
+        <div class="worker-date">${workerTodayLabel()}</div>
+        <p class="worker-hint">설비에 붙어있는 <b>설비 QR코드</b>를 스캔해주세요.</p>
+        <button class="worker-bigbtn" id="scanEqBtn">📷 설비 QR 스캔</button>
+      </div>`;
+  } else if(!workerProduct){
+    stepHtml = `
+      <div class="worker-step">
+        <div class="worker-date">${workerTodayLabel()}</div>
+        <div class="worker-eq-badge">설비 : <b>${effectiveLabel(workerQrid)}</b></div>
+        <p class="worker-hint">작업표준서에 붙어있는 <b>품목 QR코드</b>를 스캔해주세요.</p>
+        <button class="worker-bigbtn" id="scanProdBtn2">📷 품목 QR 스캔</button>
+        <button class="worker-linkbtn" id="changeEqBtn">다른 설비 다시 스캔</button>
+      </div>`;
+  } else {
+    stepHtml = `
+      <div class="worker-step">
+        <div class="worker-date">${workerTodayLabel()}</div>
+        <div class="worker-eq-badge">설비 : <b>${effectiveLabel(workerQrid)}</b> · 품목 : <b>${workerProduct}</b></div>
+        <p class="worker-hint">생산한 수량을 입력해주세요.</p>
+        <div class="worker-qty-display" id="workerQtyDisplay">${workerQtyStr || '0'}<span class="unit">개</span></div>
+        <div class="worker-numpad" id="workerNumpad">
+          ${[1,2,3,4,5,6,7,8,9].map(n=>`<button data-n="${n}">${n}</button>`).join('')}
+          <button data-n="clear">지우기</button>
+          <button data-n="0">0</button>
+          <button data-n="back">⌫</button>
+        </div>
+        <button class="worker-bigbtn" id="workerSaveBtn" style="background:var(--run);">✅ 저장</button>
+        <button class="worker-linkbtn" id="changeProdBtn">품목 다시 스캔</button>
+        <button class="worker-linkbtn" id="changeEqBtn2">다른 설비 스캔</button>
+      </div>`;
+  }
+
+  main.innerHTML = `<div class="worker-wrap">${stepHtml}</div>`;
+
+  const scanEqBtn = document.getElementById('scanEqBtn');
+  if(scanEqBtn) scanEqBtn.onclick = ()=>{
+    startProductScan((data)=>{
+      const qrid = parseEqFromScan(data);
+      if(!qrid){
+        toast('설비 QR이 아닙니다. 설비 QR코드를 스캔해주세요.');
+        return;
+      }
+      workerQrid = qrid; workerProduct = null; workerQtyStr = '';
+      renderWorkerEntry(main);
+    }, '설비 QR을 카메라에 비춰주세요');
+  };
+  const changeEqBtn = document.getElementById('changeEqBtn') || document.getElementById('changeEqBtn2');
+  if(changeEqBtn) changeEqBtn.onclick = ()=>{
+    workerQrid = null; workerProduct = null; workerQtyStr = '';
+    renderWorkerEntry(main);
+  };
+  const scanProdBtn2 = document.getElementById('scanProdBtn2');
+  if(scanProdBtn2) scanProdBtn2.onclick = ()=>{
+    startProductScan((data)=>{
+      if(!data.startsWith(PROD_TAG)){
+        toast('품목 QR이 아닙니다. 품목 QR코드를 스캔해주세요.');
+        return;
+      }
+      workerProduct = data.slice(PROD_TAG.length);
+      workerQtyStr = '';
+      renderWorkerEntry(main);
+    }, '품목 QR을 카메라에 비춰주세요');
+  };
+  const changeProdBtn = document.getElementById('changeProdBtn');
+  if(changeProdBtn) changeProdBtn.onclick = ()=>{
+    workerProduct = null; workerQtyStr = '';
+    renderWorkerEntry(main);
+  };
+  const numpad = document.getElementById('workerNumpad');
+  if(numpad) numpad.querySelectorAll('button').forEach(b=>{
+    b.onclick = ()=>{
+      const v = b.dataset.n;
+      if(v==='clear') workerQtyStr = '';
+      else if(v==='back') workerQtyStr = workerQtyStr.slice(0,-1);
+      else if(workerQtyStr.length < 6) workerQtyStr += v;
+      document.getElementById('workerQtyDisplay').innerHTML = `${workerQtyStr || '0'}<span class="unit">개</span>`;
+    };
+  });
+  const saveBtn = document.getElementById('workerSaveBtn');
+  if(saveBtn) saveBtn.onclick = async ()=>{
+    const qty = parseInt(workerQtyStr||'0', 10);
+    if(!qty || qty<=0){ toast('수량을 입력해주세요.'); return; }
+    saveBtn.disabled = true; saveBtn.textContent = '저장 중...';
+    const ts = Date.now();
+    const worker = (currentUser && currentUser.email) || '';
+    const ok1 = await saveStatus(workerQrid, {status:'run', product:workerProduct, qty, note:'', ts});
+    let ok2 = true;
+    try{
+      if(db) await db.ref(`workerLog/${workerDateKey()}/${safeKey(workerQrid)}`).push({product:workerProduct, qty, ts, worker});
+    }catch(err){ console.error(err); ok2 = false; }
+    saveBtn.disabled = false; saveBtn.textContent = '✅ 저장';
+    if(ok1){
+      toast(ok2 ? '저장되었습니다.' : '가동상태는 저장됐지만 실적 기록은 실패했습니다.');
+      workerProduct = null; workerQtyStr = '';
+      renderWorkerEntry(main);
+    } else {
+      toast('저장 실패 - 다시 시도해주세요.');
+    }
+  };
+}
+
 function renderQr(main){
   main.innerHTML = '';
   const base = getBaseUrl();
@@ -1681,12 +1850,12 @@ function stopScan(){
   if(scanStream){ scanStream.getTracks().forEach(t=>t.stop()); scanStream=null; }
   clearInterval(window.__scanTimer);
 }
-async function startProductScan(onResult){
+async function startProductScan(onResult, hintText){
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:#000;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;';
   overlay.innerHTML = `
     <video id="scanVideo" style="width:100%;max-width:420px;border-radius:10px;" playsinline muted></video>
-    <div style="color:#fff;font-size:13px;margin-top:14px;">품목 QR을 카메라에 비춰주세요</div>
+    <div style="color:#fff;font-size:13px;margin-top:14px;">${hintText || 'QR을 카메라에 비춰주세요'}</div>
     <button id="scanCancel" style="margin-top:18px;padding:10px 20px;border-radius:8px;border:none;background:#444;color:#fff;font-size:13px;">취소</button>
   `;
   document.body.appendChild(overlay);
