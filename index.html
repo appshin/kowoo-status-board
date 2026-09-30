@@ -188,7 +188,9 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .pr-table td.pr-empty{background:var(--filestop-bg);color:var(--filestop);font-weight:600;}
 .pr-table.pr-wide{white-space:nowrap;}
 .pr-table.pr-wide th, .pr-table.pr-wide td{padding:8px 10px;font-size:12.5px;}
-.pr-table .pr-rowhead{position:sticky;left:0;background:#f7f6f2;z-index:1;font-weight:700;text-align:left;min-width:70px;}
+.pr-table .pr-rowhead{position:sticky;left:0;background:#f7f6f2;z-index:2;font-weight:700;text-align:left;min-width:100px;}
+.pr-table .pr-shifthead{position:sticky;left:100px;background:#faf9f6;z-index:2;font-weight:600;text-align:left;min-width:52px;color:#7c8493;}
+.pr-table tr.pr-eqfirst th.pr-rowhead, .pr-table tr.pr-eqfirst td, .pr-table tr.pr-eqfirst th.pr-shifthead{border-top:2px solid #d8d5cd;}
 .layout-marker.editable{cursor:grab;box-shadow:0 0 0 3px rgba(232,137,47,.5);}
 .layout-marker.editable:active{cursor:grabbing;}
 .layout-marker.custom{border:2px dashed #fff;box-shadow:0 0 0 2px var(--amber);}
@@ -1463,7 +1465,7 @@ async function renderInputPage(key){
 }
 
 // ---------- Equipment production report ----------
-let prodReportQrid = null;
+let prodReportBuilding = null;
 function daysInMonth(refDate){
   return new Date(refDate.getFullYear(), refDate.getMonth()+1, 0).getDate();
 }
@@ -1484,56 +1486,53 @@ async function renderProdReport(main){
     return;
   }
 
-  const qridsWithData = Object.keys(pfEquipReport).sort();
-  if(!prodReportQrid || !qridsWithData.includes(prodReportQrid)){
-    prodReportQrid = qridsWithData[0] || null;
-  }
+  const qridsWithData = new Set(Object.keys(pfEquipReport));
   const byBuilding = {};
   EQUIP.forEach(e=>{
-    if(!qridsWithData.includes(e.qrid)) return;
+    if(!qridsWithData.has(e.qrid)) return;
     (byBuilding[e.building] = byBuilding[e.building]||[]).push(e.qrid);
   });
+  const buildings = Object.keys(byBuilding).sort();
+  if(!prodReportBuilding || !buildings.includes(prodReportBuilding)){
+    prodReportBuilding = buildings[0] || null;
+  }
+  const qridList = prodReportBuilding ? byBuilding[prodReportBuilding] : [];
 
   const nDays = daysInMonth(pfRefDate);
-  const data = prodReportQrid ? (pfEquipReport[prodReportQrid]||{}) : {};
-
   const dateHeaders = Array.from({length:nDays}, (_,i)=>`<th>${pfRefDate.getMonth()+1}/${i+1}</th>`).join('');
-  function shiftRow(label, key){
+
+  function shiftCells(data, key){
     let cells = '';
     for(let d=1; d<=nDays; d++){
       const bucket = (data[d]||{})[key] || {};
       const empty = !Object.keys(bucket).length;
       cells += `<td class="${empty?'pr-empty':''}">${empty? '가동없음' : fmtBreakdown(bucket)}</td>`;
     }
-    return `<tr><th class="pr-rowhead">${label}</th>${cells}</tr>`;
+    return cells;
   }
+  let bodyRows = '';
+  qridList.forEach(qrid=>{
+    const data = pfEquipReport[qrid] || {};
+    bodyRows += `<tr class="pr-eqfirst"><th class="pr-rowhead" rowspan="2">${effectiveLabel(qrid)}</th><th class="pr-shifthead">주간</th>${shiftCells(data,'day')}</tr>`;
+    bodyRows += `<tr><th class="pr-shifthead">야간</th>${shiftCells(data,'night')}</tr>`;
+  });
 
   body.innerHTML = `
     <div class="toolbar" style="margin-top:12px;">
-      <label class="mono" style="font-size:11px;color:#7c8493;">설비</label>
-      <select id="prodReportSelect" style="min-width:220px;">
-        ${Object.entries(byBuilding).map(([b, qrids])=>`
-          <optgroup label="${b}">
-            ${qrids.map(q=>`<option value="${q}" ${q===prodReportQrid?'selected':''}>${effectiveLabel(q)}</option>`).join('')}
-          </optgroup>`).join('')}
-      </select>
+      <div class="tabs">${buildings.map(b=>`<button class="${b===prodReportBuilding?'active':''}" data-b="${b}">${b}</button>`).join('')}</div>
       <button class="btn ghost small" id="prodReportExportBtn" style="margin-left:auto;">전체 설비 엑셀로 다운로드</button>
     </div>
-    <div class="card" style="margin-top:12px;padding:0;overflow:auto;max-width:100%;">
+    <div class="card" style="margin-top:12px;padding:0;overflow:auto;max-width:100%;max-height:75vh;">
       <table class="pr-table pr-wide">
-        <thead><tr><th class="pr-rowhead">구분</th>${dateHeaders}</tr></thead>
-        <tbody>
-          ${shiftRow('주간','day')}
-          ${shiftRow('야간','night')}
-        </tbody>
+        <thead><tr><th class="pr-rowhead">설비</th><th class="pr-shifthead">구분</th>${dateHeaders}</tr></thead>
+        <tbody>${bodyRows}</tbody>
       </table>
     </div>
-    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">빨간 바탕("가동없음")은 그 교대시간에 실적이 없었던 날입니다. 인원/설비 문제 등으로 자주 비가동이면 원인 확인이 필요합니다. 표는 좌우로 스크롤됩니다.</p>
+    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">빨간 바탕("가동없음")은 그 교대시간에 실적이 없었던 날입니다. 인원/설비 문제 등으로 자주 비가동이면 원인 확인이 필요합니다. 표는 상하좌우로 스크롤됩니다.</p>
   `;
-  document.getElementById('prodReportSelect').onchange = (e)=>{
-    prodReportQrid = e.target.value;
-    renderProdReport(main);
-  };
+  body.querySelectorAll('.tabs button').forEach(btn=>{
+    btn.onclick = ()=>{ prodReportBuilding = btn.dataset.b; renderProdReport(main); };
+  });
   document.getElementById('prodReportExportBtn').onclick = exportProdReportExcel;
 }
 function exportProdReportExcel(){
