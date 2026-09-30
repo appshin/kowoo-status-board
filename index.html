@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Noto+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode/1.4.4/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
@@ -1535,28 +1536,55 @@ async function renderProdReport(main){
   });
   document.getElementById('prodReportExportBtn').onclick = exportProdReportExcel;
 }
-function exportProdReportExcel(){
+async function exportProdReportExcel(){
   const nDays = daysInMonth(pfRefDate);
   const dateLabels = Array.from({length:nDays}, (_,i)=>`${pfRefDate.getMonth()+1}/${i+1}`);
-  const rows = [];
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('설비별 생산실적');
+  ws.columns = [
+    {header:'설비고유번호', key:'qrid', width:20},
+    {header:'구분', key:'shift', width:8},
+    ...dateLabels.map((d,i)=>({header:d, key:'d'+i, width:16})),
+  ];
+  ws.getRow(1).font = {bold:true};
+  ws.getRow(1).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFF0EFEA'}};
+
+  const emptyFill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFFBE5E3'}};
+  const emptyFont = {color:{argb:'FFD5453A'}, bold:true};
+
   Object.keys(pfEquipReport).sort().forEach(qrid=>{
     const data = pfEquipReport[qrid];
     ['day','night'].forEach(key=>{
-      const row = {'설비고유번호': effectiveLabel(qrid), '구분': key==='day'?'주간':'야간'};
+      const rowData = {qrid: effectiveLabel(qrid), shift: key==='day'?'주간':'야간'};
+      const emptyFlags = [];
       for(let d=1; d<=nDays; d++){
         const bucket = (data[d]||{})[key] || {};
         const empty = !Object.keys(bucket).length;
-        row[dateLabels[d-1]] = empty ? '가동없음' : Object.entries(bucket).map(([p,q])=>`${p} ${Math.round(q)}`).join(', ');
+        rowData['d'+(d-1)] = empty ? '가동없음' : Object.entries(bucket).map(([p,q])=>`${p} ${Math.round(q)}`).join(', ');
+        emptyFlags.push(empty);
       }
-      rows.push(row);
+      const row = ws.addRow(rowData);
+      emptyFlags.forEach((empty, i)=>{
+        if(empty){
+          const cell = row.getCell(3+i);
+          cell.fill = emptyFill;
+          cell.font = emptyFont;
+        }
+      });
     });
   });
-  const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [{wch:20},{wch:8}, ...dateLabels.map(()=>({wch:16}))];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, '설비별 생산실적');
-  const fname = `설비별_생산실적_${pfRefDate.getFullYear()}${String(pfRefDate.getMonth()+1).padStart(2,'0')}.xlsx`;
-  XLSX.writeFile(wb, fname);
+  ws.views = [{state:'frozen', xSplit:2, ySplit:1}];
+
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `설비별_생산실적_${pfRefDate.getFullYear()}${String(pfRefDate.getMonth()+1).padStart(2,'0')}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ---------- QR management ----------
