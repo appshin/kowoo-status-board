@@ -186,6 +186,9 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .pr-table td{padding:8px 14px;border-bottom:1px solid #f2f1ee;vertical-align:top;line-height:1.6;}
 .pr-table tr:last-child td{border-bottom:none;}
 .pr-table td.pr-empty{background:var(--filestop-bg);color:var(--filestop);font-weight:600;}
+.pr-table.pr-wide{white-space:nowrap;}
+.pr-table.pr-wide th, .pr-table.pr-wide td{padding:8px 10px;font-size:12.5px;}
+.pr-table .pr-rowhead{position:sticky;left:0;background:#f7f6f2;z-index:1;font-weight:700;text-align:left;min-width:70px;}
 .layout-marker.editable{cursor:grab;box-shadow:0 0 0 3px rgba(232,137,47,.5);}
 .layout-marker.editable:active{cursor:grabbing;}
 .layout-marker.custom{border:2px dashed #fff;box-shadow:0 0 0 2px var(--amber);}
@@ -1494,17 +1497,15 @@ async function renderProdReport(main){
   const nDays = daysInMonth(pfRefDate);
   const data = prodReportQrid ? (pfEquipReport[prodReportQrid]||{}) : {};
 
-  let rowsHtml = '';
-  for(let d=1; d<=nDays; d++){
-    const dayBucket = (data[d]||{}).day || {};
-    const nightBucket = (data[d]||{}).night || {};
-    const dayEmpty = !Object.keys(dayBucket).length;
-    const nightEmpty = !Object.keys(nightBucket).length;
-    rowsHtml += `<tr>
-      <td class="mono" style="font-weight:700;">${pfRefDate.getMonth()+1}/${d}</td>
-      <td class="${dayEmpty?'pr-empty':''}">${dayEmpty? '가동없음' : fmtBreakdown(dayBucket)}</td>
-      <td class="${nightEmpty?'pr-empty':''}">${nightEmpty? '가동없음' : fmtBreakdown(nightBucket)}</td>
-    </tr>`;
+  const dateHeaders = Array.from({length:nDays}, (_,i)=>`<th>${pfRefDate.getMonth()+1}/${i+1}</th>`).join('');
+  function shiftRow(label, key){
+    let cells = '';
+    for(let d=1; d<=nDays; d++){
+      const bucket = (data[d]||{})[key] || {};
+      const empty = !Object.keys(bucket).length;
+      cells += `<td class="${empty?'pr-empty':''}">${empty? '가동없음' : fmtBreakdown(bucket)}</td>`;
+    }
+    return `<tr><th class="pr-rowhead">${label}</th>${cells}</tr>`;
   }
 
   body.innerHTML = `
@@ -1518,13 +1519,16 @@ async function renderProdReport(main){
       </select>
       <button class="btn ghost small" id="prodReportExportBtn" style="margin-left:auto;">전체 설비 엑셀로 다운로드</button>
     </div>
-    <div class="card" style="margin-top:12px;padding:0;overflow:hidden;">
-      <table class="pr-table">
-        <thead><tr><th style="width:80px;">날짜</th><th>주간</th><th>야간</th></tr></thead>
-        <tbody>${rowsHtml}</tbody>
+    <div class="card" style="margin-top:12px;padding:0;overflow:auto;max-width:100%;">
+      <table class="pr-table pr-wide">
+        <thead><tr><th class="pr-rowhead">구분</th>${dateHeaders}</tr></thead>
+        <tbody>
+          ${shiftRow('주간','day')}
+          ${shiftRow('야간','night')}
+        </tbody>
       </table>
     </div>
-    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">빨간 바탕("가동없음")은 그 교대시간에 실적이 없었던 날입니다. 인원/설비 문제 등으로 자주 비가동이면 원인 확인이 필요합니다.</p>
+    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">빨간 바탕("가동없음")은 그 교대시간에 실적이 없었던 날입니다. 인원/설비 문제 등으로 자주 비가동이면 원인 확인이 필요합니다. 표는 좌우로 스크롤됩니다.</p>
   `;
   document.getElementById('prodReportSelect').onchange = (e)=>{
     prodReportQrid = e.target.value;
@@ -1533,27 +1537,23 @@ async function renderProdReport(main){
   document.getElementById('prodReportExportBtn').onclick = exportProdReportExcel;
 }
 function exportProdReportExcel(){
-  const rows = [];
   const nDays = daysInMonth(pfRefDate);
+  const dateLabels = Array.from({length:nDays}, (_,i)=>`${pfRefDate.getMonth()+1}/${i+1}`);
+  const rows = [];
   Object.keys(pfEquipReport).sort().forEach(qrid=>{
     const data = pfEquipReport[qrid];
-    for(let d=1; d<=nDays; d++){
-      const dayBucket = (data[d]||{}).day || {};
-      const nightBucket = (data[d]||{}).night || {};
-      const dayEmpty = !Object.keys(dayBucket).length;
-      const nightEmpty = !Object.keys(nightBucket).length;
-      rows.push({
-        '설비고유번호': effectiveLabel(qrid),
-        '날짜': `${pfRefDate.getFullYear()}-${String(pfRefDate.getMonth()+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`,
-        '주간 제품/수량': dayEmpty ? '' : Object.entries(dayBucket).map(([p,q])=>`${p} ${Math.round(q)}`).join(', '),
-        '주간 상태': dayEmpty ? '가동없음' : '가동',
-        '야간 제품/수량': nightEmpty ? '' : Object.entries(nightBucket).map(([p,q])=>`${p} ${Math.round(q)}`).join(', '),
-        '야간 상태': nightEmpty ? '가동없음' : '가동',
-      });
-    }
+    ['day','night'].forEach(key=>{
+      const row = {'설비고유번호': effectiveLabel(qrid), '구분': key==='day'?'주간':'야간'};
+      for(let d=1; d<=nDays; d++){
+        const bucket = (data[d]||{})[key] || {};
+        const empty = !Object.keys(bucket).length;
+        row[dateLabels[d-1]] = empty ? '가동없음' : Object.entries(bucket).map(([p,q])=>`${p} ${Math.round(q)}`).join(', ');
+      }
+      rows.push(row);
+    });
   });
   const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [{wch:20},{wch:12},{wch:30},{wch:10},{wch:30},{wch:10}];
+  ws['!cols'] = [{wch:20},{wch:8}, ...dateLabels.map(()=>({wch:16}))];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, '설비별 생산실적');
   const fname = `설비별_생산실적_${pfRefDate.getFullYear()}${String(pfRefDate.getMonth()+1).padStart(2,'0')}.xlsx`;
