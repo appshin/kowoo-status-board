@@ -1914,18 +1914,29 @@ async function startProductScan(onResult, hintText){
   const guide = overlay.querySelector('#scanGuide');
   overlay.querySelector('#scanCancel').onclick = ()=>{ stopScan(); overlay.remove(); };
   try{
-    scanStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment', width:{ideal:1280}, height:{ideal:1280}}});
+    scanStream = await navigator.mediaDevices.getUserMedia({video:{
+      facingMode:{ideal:'environment'},
+      width:{ideal:1920}, height:{ideal:1920}
+    }});
   }catch(e){
     toast('카메라를 열 수 없습니다 (권한 또는 https 필요).');
     overlay.remove();
     return;
   }
+  // ask the camera to keep re-focusing continuously where supported — default
+  // getUserMedia streams in some Android browsers otherwise lock focus once and
+  // never sharpen up close, unlike native camera apps
+  try{
+    const track = scanStream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if(caps.focusMode && caps.focusMode.includes('continuous')){
+      await track.applyConstraints({advanced:[{focusMode:'continuous'}]});
+    }
+  }catch(err){ /* not supported on this device/browser - ignore */ }
+
   video.srcObject = scanStream;
   await video.play();
-  // size the visual guide box to a centered square (60% of the shorter side) and
-  // only decode that cropped region — this is what actually fixes multi-QR frames,
-  // since jsQR only ever sees the one code the person has lined up inside the box
-  const guideFrac = 0.6;
+  const guideFrac = 0.65;
   const side = Math.min(video.clientWidth, video.clientHeight) * guideFrac;
   guide.style.width = side+'px';
   guide.style.height = side+'px';
@@ -1933,22 +1944,31 @@ async function startProductScan(onResult, hintText){
   guide.style.top = ((video.clientHeight-side)/2)+'px';
 
   const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d', {willReadFrequently:true});
+  ctx.imageSmoothingEnabled = false;
+  function tryDecode(sx, sy, sw, sh){
+    canvas.width = sw; canvas.height = sh;
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+    const imgData = ctx.getImageData(0,0,sw,sh);
+    return jsQR(imgData.data, imgData.width, imgData.height, {inversionAttempts:'attemptBoth'});
+  }
   window.__scanTimer = setInterval(()=>{
     if(!video.videoWidth) return;
     const vw = video.videoWidth, vh = video.videoHeight;
-    const cropSide = Math.min(vw, vh) * guideFrac;
-    const sx = (vw-cropSide)/2, sy = (vh-cropSide)/2;
-    canvas.width = cropSide; canvas.height = cropSide;
-    ctx.drawImage(video, sx, sy, cropSide, cropSide, 0, 0, cropSide, cropSide);
-    const imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
-    const code = jsQR(imgData.data, imgData.width, imgData.height);
+    // try the full frame first (matches how native scanner apps see it), then
+    // fall back to just the centered guide box if several codes confuse the full-frame pass
+    let code = tryDecode(0, 0, vw, vh);
+    if(!code || !code.data){
+      const cropSide = Math.min(vw, vh) * guideFrac;
+      const sx = (vw-cropSide)/2, sy = (vh-cropSide)/2;
+      code = tryDecode(sx, sy, cropSide, cropSide);
+    }
     if(code && code.data){
       stopScan();
       overlay.remove();
       onResult(code.data);
     }
-  }, 300);
+  }, 250);
 }
 
 // ---------- Init ----------
