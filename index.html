@@ -9,7 +9,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcode/1.4.4/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
@@ -1898,6 +1898,10 @@ function stopScan(){
   clearInterval(window.__scanTimer);
 }
 async function startProductScan(onResult, hintText){
+  if(typeof jsQR === 'undefined'){
+    toast('QR 인식 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인하고 새로고침 후 다시 시도해주세요.');
+    return;
+  }
   const overlay = document.createElement('div');
   overlay.style.cssText = 'position:fixed;inset:0;background:#000;z-index:100;display:flex;flex-direction:column;align-items:center;justify-content:center;';
   overlay.innerHTML = `
@@ -1954,19 +1958,23 @@ async function startProductScan(onResult, hintText){
   }
   window.__scanTimer = setInterval(()=>{
     if(!video.videoWidth) return;
-    const vw = video.videoWidth, vh = video.videoHeight;
-    // try the full frame first (matches how native scanner apps see it), then
-    // fall back to just the centered guide box if several codes confuse the full-frame pass
-    let code = tryDecode(0, 0, vw, vh);
-    if(!code || !code.data){
-      const cropSide = Math.min(vw, vh) * guideFrac;
-      const sx = (vw-cropSide)/2, sy = (vh-cropSide)/2;
-      code = tryDecode(sx, sy, cropSide, cropSide);
-    }
-    if(code && code.data){
-      stopScan();
-      overlay.remove();
-      onResult(code.data);
+    try{
+      const vw = video.videoWidth, vh = video.videoHeight;
+      // try the full frame first (matches how native scanner apps see it), then
+      // fall back to just the centered guide box if several codes confuse the full-frame pass
+      let code = tryDecode(0, 0, vw, vh);
+      if(!code || !code.data){
+        const cropSide = Math.min(vw, vh) * guideFrac;
+        const sx = (vw-cropSide)/2, sy = (vh-cropSide)/2;
+        code = tryDecode(sx, sy, cropSide, cropSide);
+      }
+      if(code && code.data){
+        stopScan();
+        overlay.remove();
+        onResult(code.data);
+      }
+    }catch(err){
+      console.error('QR decode error', err);
     }
   }, 250);
 }
