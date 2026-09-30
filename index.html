@@ -114,6 +114,28 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .qr-cell .eqid{font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:13px;}
 .qr-cell .eqname{font-size:9.5px;color:#777;margin-top:2px;line-height:1.25;}
 
+@media (max-width: 760px){
+  header{padding:12px 14px;}
+  header .row{flex-wrap:nowrap;}
+  header h1{font-size:15px;}
+  header .tag{display:none;}
+  #userbar{font-size:11px;}
+  nav{overflow-x:auto;-webkit-overflow-scrolling:touch;flex-wrap:nowrap;width:100%;padding-bottom:2px;scrollbar-width:none;}
+  nav::-webkit-scrollbar{display:none;}
+  nav button{flex:0 0 auto;padding:7px 12px;font-size:12px;}
+  #main{padding:12px;}
+  .legend{gap:8px;font-size:11px;}
+  .toolbar{gap:6px;}
+  .toolbar label.mono{width:100%;}
+  .eq-grid{grid-template-columns:repeat(2,1fr);gap:8px;}
+  .eq-card{padding:10px;}
+  .eqname{font-size:12px;}
+  .layout-scroll{max-height:65vh;}
+  .worker-wrap{padding:12px 6px;}
+  .worker-bigbtn{font-size:15px;padding:18px;}
+  .pr-table.pr-wide th, .pr-table.pr-wide td{padding:6px 8px;font-size:11.5px;}
+  .card{padding:14px;}
+}
 @media print{
   header,.toolbar,.legend,#qrToolbar{display:none !important;}
   body{background:#fff;}
@@ -899,10 +921,21 @@ const PAGES = [
   {id:'dash', label:'대시보드'},
   {id:'layout', label:'배치도 현황'},
   {id:'prodreport', label:'설비별 생산실적'},
-  {id:'worker', label:'현장 입력'},
-  {id:'qr', label:'설비 QR코드'},
-  {id:'prodqr', label:'품목 QR코드'},
+  {id:'worker', label:'현장 입력', mobileOnly:true},
+  {id:'qr', label:'설비 QR코드', desktopOnly:true},
+  {id:'prodqr', label:'품목 QR코드', desktopOnly:true},
 ];
+function isMobileDevice(){
+  return window.innerWidth < 860;
+}
+function visiblePages(){
+  const mobile = isMobileDevice();
+  return PAGES.filter(p=>{
+    if(p.mobileOnly && !mobile) return false;
+    if(p.desktopOnly && mobile) return false;
+    return true;
+  });
+}
 let currentPage = 'dash';
 let statusCache = {};
 let coordOverrides = {};
@@ -912,7 +945,9 @@ let labelOverrides = {};
 function renderNav(){
   const nav = document.getElementById('nav');
   nav.innerHTML = '';
-  PAGES.forEach(p=>{
+  const pages = visiblePages();
+  if(!pages.some(p=>p.id===currentPage)) currentPage = 'dash';
+  pages.forEach(p=>{
     const b = document.createElement('button');
     b.className = p.id===currentPage?'active':'';
     b.textContent = p.label;
@@ -927,6 +962,13 @@ function renderNav(){
     nav.appendChild(b);
   });
 }
+let __resizeRenderTimer = null;
+window.addEventListener('resize', ()=>{
+  clearTimeout(__resizeRenderTimer);
+  __resizeRenderTimer = setTimeout(()=>{
+    if(!getEqParam()) render();
+  }, 250);
+});
 
 function getEqParam(){
   const params = new URLSearchParams(location.search);
