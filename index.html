@@ -240,6 +240,10 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .layout-marker.custom{border:2px dashed #fff;box-shadow:0 0 0 2px var(--amber);}
 ::-webkit-scrollbar{width:9px;height:9px;}
 ::-webkit-scrollbar-thumb{background:#c9c5ba;border-radius:6px;}
+
+.pr-op{font-size:10.5px;color:#7c8493;white-space:normal;line-height:1.35;display:inline-block;max-width:150px;}
+.prod-modal-ops{margin-top:12px;padding-top:10px;border-top:1px dashed #e3e1da;font-size:12.5px;color:#555;line-height:1.7;}
+.prod-modal-ops b{color:#333;margin-right:4px;}
 </style>
 </head>
 <body>
@@ -295,6 +299,7 @@ const BUILDINGS = [...new Set(EQUIP.map(e=>e.building))];
 // ==================== 실적 파일(Excel) 기반 가동현황 - pf* 네임스페이스 ====================
 const PF_EXCLUDE_SHEETS = new Set(['생산현황','UPTime','Summary F1','1.)생산 종합 효율','2.)Summary HYD',
   '3.)생산현황 CNC','4.)생산현황 Press','Summary HYD ','Summary CNC','Target']);
+let pfUnmatched = [];
 let pfDayIndex = null;      // day(number) -> { qrid: {products:Set, qty} }
 let pfRefDate = null;       // Date anchoring the file's month
 let pfSelectedDate = null;  // Date currently shown
@@ -553,7 +558,7 @@ function pfBuildDayIndex(records){
       const split = pfSplitMachineId(rec.machine_id);
       eqid = split.eqid; eqname = split.eqname;
     }
-    const qrid = pfMatchQrid(qridNormDict, eqid, eqname);
+    const qrid = rec.pre ? rec.qrid : pfMatchQrid(qridNormDict, eqid, eqname);
     if(!qrid) return;
     idx[rec.day] = idx[rec.day] || {};
     idx[rec.day][qrid] = idx[rec.day][qrid] || {products:{}, qty:0};
@@ -563,11 +568,124 @@ function pfBuildDayIndex(records){
   return idx;
 }
 
+
+// ===== 설비별 시트 형식 (코우타이 2026-10~) : 시트 1개 = 설비 1대, 안에 제품 × 주/야 블록 =====
+const PF_SHEET_ALIAS = {
+  'DHP-200-11 No.1':['MHY-1'], 'DHP-200-16-02 No.2':['MHY-2'], 'DHP-200-14-02 No.3':['MHY-3'],
+  'DHP-200-7 No.4':['MHY-4'], 'DHP-200-6 No.5':['MHY-5'], 'DHP-xxx-xx No.6':['MHY-6'],
+  'NA5 Drilling MC No.1':['NA5 MCT'], 'NA5 MCT KEYHOLE_F1':['NA5 MCT'],
+  'Chamfering No.01':['CHAMFER-01'], 'NA5_Slot MC No.1':['SLOT-01'],
+  'NA5_ Marking No.1':['LOT-01'], 'NA5_Lot Marking No.1':['LOT-01'],
+  'Slot Marking-X81C':['슬롯마킹기'], 'Rolling No.1 F3':['ROLLING-01'],
+  'Straightener No.7':['straight-07'], 'Straightener No.7 ดัด F3':['straight-07'],
+  'DH-CL-167':['KWI-CL-167'], 'DH-CL-130':['30'], 'KWI-HT-01_F3':['KWI-HT-01','HT-01'],
+  'Piercing-SHAFT#1 J23-6.3-1':['J23-6.3-1'], 'Piercing-SHAFT #2 J23-6.3-2':['J23-6.3-2'],
+  'DHP-25-24 No.17':['단동17호'], 'DHP-25-25 No.18':['단동18호'],
+  'HP-010':['HNCP-80-1(임시)'], 'HP-009':['HNCP-80-2(임시)']
+};
+const PF_TOK_RE = [/(?:DH-CL|KWI-CL|KWI-CNM|KWI-HT|KWI-GT)-\d+/gi, /DHP-[0-9xX]+(?:-[0-9xX]+)*/gi, /\bHP-\d{3}\b/gi, /\bYP-\d{3}\b/gi, /J23-6\.3-\d/gi, /\b4\d{5}\b/g];
+function pfTok(s){
+  const out = new Set(); const str = String(s||'');
+  PF_TOK_RE.forEach(re=>{ const m = str.match(re); if(m) m.forEach(t=>out.add(t.toUpperCase())); });
+  return out;
+}
+function pfEquipTokens(){
+  // tier 1: codes written in the qrid or its (possibly user-renamed) label; tier 2: codes implied by a bare number / short code
+  const list = [];
+  const all = EQUIP.map(e=>e.qrid).concat(Object.values(customEquipment||{}).map(c=>c.qrid));
+  all.forEach(q=>{
+    const lab = effectiveLabel(q);
+    const t1 = new Set([...pfTok(q), ...pfTok(lab)]);
+    const t2 = new Set();
+    [q, lab].forEach(s=>{
+      const x = String(s).trim();
+      if(/^\d+$/.test(x)){ t2.add('DH-CL-'+x); t2.add('KWI-CL-'+x); }
+      const m = x.match(/^(CNM|GT|HT)-(\d+)$/i); if(m) t2.add('KWI-'+m[1].toUpperCase()+'-'+m[2]);
+    });
+    list.push({qrid:q, label:lab, t1, t2});
+  });
+  return list;
+}
+function pfSheetToQrid(sheet, list){
+  list = list || pfEquipTokens();
+  const al = PF_SHEET_ALIAS[sheet];
+  if(al){
+    for(const target of al){
+      const hit = list.find(x=>x.qrid===target || x.label===target);
+      if(hit) return hit.qrid;
+    }
+  }
+  const st = pfTok(sheet);
+  if(!st.size) return null;
+  const hit1 = list.filter(x=>[...st].some(t=>x.t1.has(t)));
+  if(hit1.length===1) return hit1[0].qrid;
+  if(hit1.length>1) return null;                      // ambiguous (e.g. HP-002-1 / -2) - do not guess
+  const hit2 = list.filter(x=>[...st].some(t=>x.t2.has(t)));
+  return hit2.length===1 ? hit2[0].qrid : null;
+}
+function pfIsEquipFormat(wb){
+  let n = 0;
+  wb.SheetNames.forEach(name=>{
+    const ws = wb.Sheets[name]; if(!ws) return;
+    const a3 = ws['A3'] && String(ws['A3'].v||'').trim().toLowerCase();
+    const b3 = ws['B3'] && String(ws['B3'].v||'').trim().toLowerCase();
+    if(a3==='item' && b3==='shift') n++;
+  });
+  return n >= 10;
+}
+function pfParseEquipWorkbook(wb){
+  const list = pfEquipTokens();
+  const records = []; const unmatched = {};
+  wb.SheetNames.forEach(name=>{
+    const ws = wb.Sheets[name]; if(!ws || !ws['!ref']) return;
+    const a3 = ws['A3'] && String(ws['A3'].v||'').trim().toLowerCase();
+    const b3 = ws['B3'] && String(ws['B3'].v||'').trim().toLowerCase();
+    if(a3!=='item' || b3!=='shift') return;
+    const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+    if(rows.length < 5) return;
+    const dayCols = {};
+    (rows[2]||[]).forEach((v,ci)=>{
+      const d = typeof v==='number' ? v : parseInt(v,10);
+      if(ci>=8 && Number.isInteger(d) && d>=1 && d<=31 && dayCols[d]===undefined) dayCols[d]=ci;
+    });
+    if(!Object.keys(dayCols).length) return;
+    const qrid = pfSheetToQrid(name.trim(), list);
+    for(let ri=3; ri<rows.length; ri++){
+      const r = rows[ri];
+      const tag = String(r[1]||'').trim().toLowerCase();
+      if(tag!=='opearator' && tag!=='operator') continue;
+      const q = rows[ri+1]; if(!q) continue;
+      const item = String(q[0]==null?'':q[0]).replace(/\s+/g,' ').trim();
+      const shift = String(q[1]||'').trim().toLowerCase()==='night' ? 'night' : 'day';
+      Object.entries(dayCols).forEach(([day,ci])=>{
+        const v = q[ci];
+        if(!(pfIsNum(v) && v>0)) return;
+        const opRaw = r[ci];
+        const ops = opRaw==null ? [] : String(opRaw).split(/\s*[+&\/,\n]+\s*/).map(s=>s.trim()).filter(Boolean);
+        records.push({day:parseInt(day), product:item||'(품목없음)', machine_id:name.trim(), qty:v, shift, operator:ops, pre:true, qrid:qrid, extra: qrid? null : name.trim()});
+        if(!qrid){ const u = unmatched[name.trim()] = unmatched[name.trim()] || {sheet:name.trim(), qty:0}; u.qty += v; }
+      });
+    }
+  });
+  // month: the summary sheet states it ("Current month"); fall back to the file name
+  let refDate = null;
+  const sm = wb.Sheets['생산 종합 현황'];
+  const c = sm && sm['D2'];
+  if(c){
+    if(c.v instanceof Date) refDate = new Date(c.v.getUTCFullYear(), c.v.getUTCMonth(), c.v.getUTCDate());
+    else if(typeof c.v==='number'){ const p = XLSX.SSF.parse_date_code(c.v); if(p) refDate = new Date(p.y, p.m-1, p.d); }
+  }
+  return {records, refDate, unmatched:Object.values(unmatched)};
+}
+
 async function pfHandleFile(file){
   try{
     const buf = await file.arrayBuffer();
     const wb = XLSX.read(buf, {type:'array', cellDates:true});
-    const {records, refDate} = pfParseWorkbook(wb);
+    const equipFmt = pfIsEquipFormat(wb);
+    const parsed = equipFmt ? pfParseEquipWorkbook(wb) : pfParseWorkbook(wb);
+    const {records, refDate} = parsed;
+    pfUnmatched = equipFmt ? (parsed.unmatched||[]) : [];
     if(!records.length){
       toast('분석 실패: 이 파일에서 일별 실적 데이터를 찾지 못했습니다.');
       return false;
@@ -592,7 +710,10 @@ async function pfHandleFile(file){
     const fromSheet = refDate
       ? new Date(refDate.getUTCFullYear(), refDate.getUTCMonth(), refDate.getUTCDate())
       : null;
-    pfRefDate = fromFilename || fromSheet || new Date();
+    let fromNumName = null;
+    const nm2 = file.name.match(/(\d{1,2})[_\-.](\d{1,2})[_\-.](20\d{2})/);
+    if(nm2 && parseInt(nm2[2])>=1 && parseInt(nm2[2])<=12) fromNumName = new Date(parseInt(nm2[3]), parseInt(nm2[2])-1, 1);
+    pfRefDate = equipFmt ? (fromSheet || fromNumName || fromFilename || new Date()) : (fromFilename || fromSheet || new Date());
     pfDayIndex = pfBuildDayIndex(records);
     pfEquipReport = pfBuildEquipmentReport(records);
     pfFileName = file.name;
@@ -609,7 +730,7 @@ async function pfHandleFile(file){
     pfUploadedBy = (firebase.auth().currentUser && firebase.auth().currentUser.email) || '';
     pfUploadedAt = Date.now();
     pfSaveSharedStatus().catch(err=>console.error('shared status save failed', err));
-    toast(`${records.length}건의 일별 실적을 읽었습니다 (설비 ${matchedQrids.size}개 매칭됨).`);
+    toast(`${records.length}건의 일별 실적을 읽었습니다 (설비 ${matchedQrids.size}개 매칭됨${pfUnmatched.length? ', 배치도에 없는 설비 '+pfUnmatched.length+'개는 설비별 생산실적의 "기타" 탭에서 확인' : ''}).`);
     return true;
   }catch(err){
     console.error(err);
@@ -627,29 +748,40 @@ function pfBuildEquipmentReport(records){
     if(KEYHOLE_HEAT_FAMILY.has(prod) && midClean==='Key hole'){ eqid='CNM-04'; eqname=null; }
     else if(KEYHOLE_HEAT_FAMILY.has(prod) && /^(Heat|High-Frequency)/i.test(midClean)){ eqid='HT-02'; eqname=null; }
     else { const split = pfSplitMachineId(rec.machine_id); eqid=split.eqid; eqname=split.eqname; }
-    const qrid = pfMatchQrid(qridNormDict, eqid, eqname);
+    const qrid = rec.pre ? (rec.qrid || rec.extra) : pfMatchQrid(qridNormDict, eqid, eqname);
     if(!qrid) return;
     const shiftKey = rec.shift==='night' ? 'night' : 'day';
     report[qrid] = report[qrid] || {};
     report[qrid][rec.day] = report[qrid][rec.day] || {day:{}, night:{}};
     const bucket = report[qrid][rec.day][shiftKey];
     bucket[rec.product] = (bucket[rec.product]||0) + rec.qty;
+    if(rec.operator && rec.operator.length){
+      const ok = shiftKey==='night' ? 'opn' : 'opd';
+      const arr = (report[qrid][rec.day][ok] = report[qrid][rec.day][ok] || []);
+      rec.operator.forEach(n=>{ if(!arr.includes(n)) arr.push(n); });
+    }
   });
   return report;
 }
 
+// Firebase keys cannot contain . # $ / [ ]  (product names such as "PU2WD (RH KJ2.9)" do) - swap in look-alike full-width characters
+function pfSanKey(k){ return String(k).replace(/\./g,'\u2024').replace(/#/g,'\uFF03').replace(/\$/g,'\uFF04').replace(/\//g,'\uFF0F').replace(/\[/g,'\uFF3B').replace(/\]/g,'\uFF3D'); }
+function pfSanObj(o){ const out = {}; Object.entries(o||{}).forEach(([k,v])=>{ const kk = pfSanKey(k); out[kk] = (out[kk]||0) + v; }); return out; }
 async function pfSaveSharedStatus(){
   if(!db || !pfDayIndex) return false;
   const flatIndex = [];
   Object.entries(pfDayIndex).forEach(([day, byQrid])=>{
     Object.entries(byQrid).forEach(([qrid, data])=>{
-      flatIndex.push({day: parseInt(day), qrid, qty: data.qty, products: data.products});
+      flatIndex.push({day: parseInt(day), qrid, qty: data.qty, products: pfSanObj(data.products)});
     });
   });
   const reportFlat = [];
   Object.entries(pfEquipReport || {}).forEach(([qrid, byDay])=>{
     Object.entries(byDay).forEach(([day, shifts])=>{
-      reportFlat.push({qrid, day: parseInt(day), day_: shifts.day, night_: shifts.night});
+      const row = {qrid, day: parseInt(day), day_: pfSanObj(shifts.day), night_: pfSanObj(shifts.night)};
+      if(shifts.opd && shifts.opd.length) row.opd = shifts.opd;
+      if(shifts.opn && shifts.opn.length) row.opn = shifts.opn;
+      reportFlat.push(row);
     });
   });
   await db.ref('productivityFile/current').set({
@@ -675,9 +807,9 @@ async function pfLoadSharedStatus(){
     });
     pfDayIndex = idx;
     const report = {};
-    (data.reportFlat||[]).forEach(({qrid, day, day_, night_})=>{
+    (data.reportFlat||[]).forEach(({qrid, day, day_, night_, opd, opn})=>{
       report[qrid] = report[qrid] || {};
-      report[qrid][day] = {day: day_||{}, night: night_||{}};
+      report[qrid][day] = {day: day_||{}, night: night_||{}, opd: opd||[], opn: opn||[]};
     });
     pfEquipReport = report;
     pfRefDate = new Date(data.refDate);
@@ -710,7 +842,9 @@ function pfStatusFor(qrid){
   if(!pfActive || !pfSelectedDate) return null;
   const day = pfSelectedDate.getDate();
   const d = (pfDayIndex[day]||{})[qrid];
-  return d ? {status:'run', product:Object.keys(d.products).join(', '), qty:d.qty, breakdown:d.products} : {status:'filestop', product:null, qty:0, breakdown:null};
+  const er = pfEquipReport && pfEquipReport[qrid] && pfEquipReport[qrid][day];
+  const operators = er ? {day: er.opd||[], night: er.opn||[]} : null;
+  return d ? {status:'run', product:Object.keys(d.products).join(', '), qty:d.qty, breakdown:d.products, operators} : {status:'filestop', product:null, qty:0, breakdown:null, operators:null};
 }
 function pfUploadedWhen(){
   if(!pfUploadedAt) return '';
@@ -732,7 +866,7 @@ function pfRenderBar(onChange){
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
         ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다</span>` : ''}
-      ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다 (실시간 수동입력 대신). 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
+      ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀(제품별 시트·설비별 시트 형식 모두 가능)을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다. 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
 }
@@ -1202,7 +1336,7 @@ async function renderLayoutMap(main){
           const qtyLine = (status==='run' || status==='live') && cs.qty ? ` · ${fmt(cs.qty)}개` : '';
           return `<div class="layout-marker ${status} ${stale?'stale':''} ${editMode?'editable':''}" style="left:${c.x}%;top:${c.y}%;" data-key="${e.qrid}" data-kind="builtin">
             <span class="marker-label">${shortLabel(dispLabel)}</span>
-            <div class="layout-tooltip">${dispLabel} · ${cs.product || label}${qtyLine}${stale?' ⚠':''}${prodLine}</div>
+            <div class="layout-tooltip">${dispLabel} · ${cs.product || label}${qtyLine}${pfOpsTip(cs)}${stale?' ⚠':''}${prodLine}</div>
           </div>`;
         }).join('')}
         ${customItems.map(e=>{
@@ -1386,6 +1520,16 @@ function renderEqCard(e){
     </div>
   `;
 }
+function pfOpsModalHtml(pf){
+  const o = pf && pf.operators; if(!o || (!o.day.length && !o.night.length)) return '';
+  const line = (lab, arr)=> arr.length ? `<div><b>${lab}</b> ${arr.join(', ')}</div>` : '';
+  return `<div class="prod-modal-ops">👤 작업자${line(' 주간', o.day)}${line(' 야간', o.night)}</div>`;
+}
+function pfOpsTip(cs){
+  const o = cs && cs.tier==='pf' && cs.pf && cs.pf.operators; if(!o) return '';
+  const parts = []; if(o.day.length) parts.push('주 '+o.day.join(', ')); if(o.night.length) parts.push('야 '+o.night.join(', '));
+  return parts.length ? ' · 👤 '+parts.join(' / ') : '';
+}
 function showProductionModal(qrid, pf){
   const existing = document.getElementById('prodModalBackdrop');
   if(existing) existing.remove();
@@ -1409,6 +1553,7 @@ function showProductionModal(qrid, pf){
       <div class="prod-modal-body">
         ${rows || '<div style="color:#9aa3ad;font-size:13px;">제품별 상세 내역이 없습니다.</div>'}
         <div class="prod-modal-total"><span>합계</span><span>${fmt(pf.qty)}개</span></div>
+        ${pfOpsModalHtml(pf)}
       </div>
     </div>
   `;
@@ -1585,6 +1730,9 @@ async function renderProdReport(main){
     if(!qridsWithData.has(e.qrid)) return;
     (byBuilding[e.building] = byBuilding[e.building]||[]).push(e.qrid);
   });
+  const known = new Set(EQUIP.map(e=>e.qrid).concat(Object.values(customEquipment||{}).map(c=>c.qrid)));
+  const extraQ = Object.keys(pfEquipReport).filter(q=>!known.has(q)).sort();
+  if(extraQ.length) byBuilding['기타'] = extraQ;
   const buildings = Object.keys(byBuilding).sort();
   if(!prodReportBuilding || !buildings.includes(prodReportBuilding)){
     prodReportBuilding = buildings[0] || null;
@@ -1599,7 +1747,8 @@ async function renderProdReport(main){
     for(let d=1; d<=nDays; d++){
       const bucket = (data[d]||{})[key] || {};
       const empty = !Object.keys(bucket).length;
-      cells += `<td class="${empty?'pr-empty':''}">${empty? '가동없음' : fmtBreakdown(bucket)}</td>`;
+      const ops = (data[d]||{})[key==='day'?'opd':'opn'] || [];
+      cells += `<td class="${empty?'pr-empty':''}">${empty? '가동없음' : fmtBreakdown(bucket) + (ops.length? '<br><span class="pr-op">👤 '+ops.join(', ')+'</span>' : '')}</td>`;
     }
     return cells;
   }
@@ -1621,7 +1770,7 @@ async function renderProdReport(main){
         <tbody>${bodyRows}</tbody>
       </table>
     </div>
-    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">빨간 바탕("가동없음")은 그 교대시간에 실적이 없었던 날입니다. 인원/설비 문제 등으로 자주 비가동이면 원인 확인이 필요합니다. 표는 상하좌우로 스크롤됩니다.</p>
+    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">빨간 바탕("가동없음")은 그 교대시간에 실적이 없었던 날입니다. 👤는 그 교대에 입력된 작업자입니다. "기타" 탭은 배치도 설비 목록에 없는 설비(교정기 등)입니다. 인원/설비 문제 등으로 자주 비가동이면 원인 확인이 필요합니다. 표는 상하좌우로 스크롤됩니다.</p>
   `;
   body.querySelectorAll('.tabs button').forEach(btn=>{
     btn.onclick = ()=>{ prodReportBuilding = btn.dataset.b; renderProdReport(main); };
@@ -1652,7 +1801,8 @@ async function exportProdReportExcel(){
       for(let d=1; d<=nDays; d++){
         const bucket = (data[d]||{})[key] || {};
         const empty = !Object.keys(bucket).length;
-        rowData['d'+(d-1)] = empty ? '가동없음' : Object.entries(bucket).map(([p,q])=>`${p} ${Math.round(q)}`).join(', ');
+        const ops = (data[d]||{})[key==='day'?'opd':'opn'] || [];
+        rowData['d'+(d-1)] = empty ? '가동없음' : Object.entries(bucket).map(([p,q])=>`${p} ${Math.round(q)}`).join(', ') + (ops.length? ' [작업자: '+ops.join(', ')+']' : '');
         emptyFlags.push(empty);
       }
       const row = ws.addRow(rowData);
