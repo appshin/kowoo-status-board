@@ -867,7 +867,7 @@ function pfRenderBar(onChange){
         <span class="mono" style="font-size:11px;color:#7c8493;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${pfFileName}</span>
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
-        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-03c (설비별 시트·A열 라벨 지원 · F2 배치도 정리)</span>` : ''}
+        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-03d (설비 클릭 시 입력화면 제거)</span>` : ''}
       ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀(제품별 시트·설비별 시트 형식 모두 가능)을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다. 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
@@ -1230,11 +1230,15 @@ async function renderDash(main){
         </div>
       `;
     }).join('');
+    // The field-input screen is no longer opened from a card (status now comes from the uploaded production file).
+    // A card that has production data opens the same production popup as the layout map; others do nothing.
     body.querySelectorAll('.eq-card').forEach(el=>{
+      const k0 = el.dataset.key; const c0 = combinedStatus(k0);
+      el.style.cursor = (c0.tier==='live' || (c0.tier==='pf' && c0.status==='run')) ? 'pointer' : 'default';
       el.onclick = ()=>{
-        const key = el.dataset.key;
-        history.pushState(null,'', `?eq=${encodeURIComponent(key)}`);
-        renderInputPage(key);
+        const key = el.dataset.key; const cs = combinedStatus(key);
+        if(cs.tier==='live') showProductionModal(key, {qty: cs.qty, breakdown: {[cs.product]: cs.qty}, live:true});
+        else if(cs.tier==='pf' && cs.status==='run') showProductionModal(key, cs.pf);
       };
     });
   }
@@ -1353,7 +1357,7 @@ async function renderLayoutMap(main){
         }).join('')}
       </div>
       </div>
-      <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">${editMode? '점: 드래그=이동, 클릭=번호수정. 빈 곳 클릭=새 설비 등록.' : '초록색 점을 클릭하면 생산 실적을, 빨간색 점을 클릭하면 입력화면을 보여줍니다.'} 확대/축소는 위 +/− 버튼을 이용하세요.</p>
+      <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">${editMode? '점: 드래그=이동, 클릭=번호수정. 빈 곳 클릭=새 설비 등록.' : '초록색 점을 클릭하면 그 날의 생산 실적과 작업자를 보여줍니다. (빨간색 점은 그 날 실적이 없는 설비입니다.)'} 확대/축소는 위 +/− 버튼을 이용하세요.</p>
     `;
     const wrap = document.getElementById('layoutImgWrap');
     const scrollEl = document.getElementById('layoutScroll');
@@ -1393,6 +1397,8 @@ async function renderLayoutMap(main){
           }
         });
       } else if(el.dataset.kind==='builtin') {
+        const c0 = combinedStatus(el.dataset.key);
+        el.style.cursor = (c0.tier==='live' || (c0.tier==='pf' && c0.status==='run')) ? 'pointer' : 'default';
         el.onclick = ()=>{
           const key = el.dataset.key;
           const cs = combinedStatus(key);
@@ -1400,10 +1406,8 @@ async function renderLayoutMap(main){
             showProductionModal(key, {qty: cs.qty, breakdown: {[cs.product]: cs.qty}, live:true});
           } else if(cs.tier==='pf' && cs.status==='run'){
             showProductionModal(key, cs.pf);
-          } else {
-            history.pushState(null,'', `?eq=${encodeURIComponent(key)}`);
-            renderInputPage(key);
           }
+          // no data for that day -> nothing opens (the field-input screen was removed from this click)
         };
       }
     });
