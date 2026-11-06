@@ -244,6 +244,17 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .pr-op{font-size:10.5px;color:#7c8493;white-space:normal;line-height:1.35;display:inline-block;max-width:150px;}
 .prod-modal-ops{margin-top:12px;padding-top:10px;border-top:1px dashed #e3e1da;font-size:12.5px;color:#555;line-height:1.7;}
 .prod-modal-ops b{color:#333;margin-right:4px;}
+
+.pf-upload-btn{display:inline-flex;align-items:center;gap:6px;cursor:pointer;background:#dd8a33;color:#fff;font-weight:700;font-size:14px;padding:9px 16px;border-radius:8px;border:0;box-shadow:0 2px 6px rgba(221,138,51,.4);transition:transform .08s,box-shadow .08s,background .08s;white-space:nowrap;}
+.pf-upload-btn:hover{background:#c9772a;box-shadow:0 4px 10px rgba(201,119,42,.45);transform:translateY(-1px);}
+.pf-upload-hint{font-size:12px;color:#c9772a;font-weight:600;}
+.pr-stat{margin-top:6px;font-size:11.5px;font-weight:700;color:#2c3340;white-space:nowrap;}
+.pr-stat2{margin-top:2px;font-size:10.5px;font-weight:500;color:#7c8493;white-space:nowrap;}
+.pr-bar{margin-top:5px;height:5px;width:100%;min-width:120px;background:#e8e6df;border-radius:3px;overflow:hidden;}
+.pr-bar span{display:block;height:100%;border-radius:3px;}
+.pr-out{color:#c3c7cd;text-align:center;background:#faf9f6;}
+.pr-summary{margin-top:12px;padding:10px 14px;background:#fff;border:1px solid #e3e1da;border-radius:10px;font-size:12.5px;color:#4a5260;line-height:1.7;}
+.pr-summary b{color:#1f2630;}
 </style>
 </head>
 <body>
@@ -300,6 +311,7 @@ const BUILDINGS = [...new Set(EQUIP.map(e=>e.building))];
 const PF_EXCLUDE_SHEETS = new Set(['생산현황','UPTime','Summary F1','1.)생산 종합 효율','2.)Summary HYD',
   '3.)생산현황 CNC','4.)생산현황 Press','Summary HYD ','Summary CNC','Target']);
 let pfUnmatched = [];
+let pfSeen = new Set();   // equipment that has a sheet in the uploaded file (even if it never ran)
 let pfDayIndex = null;      // day(number) -> { qrid: {products:Set, qty} }
 let pfRefDate = null;       // Date anchoring the file's month
 let pfSelectedDate = null;  // Date currently shown
@@ -635,7 +647,7 @@ function pfIsEquipFormat(wb){
 }
 function pfParseEquipWorkbook(wb){
   const list = pfEquipTokens();
-  const records = []; const unmatched = {};
+  const records = []; const unmatched = {}; const seen = new Set();
   wb.SheetNames.forEach(name=>{
     const ws = wb.Sheets[name]; if(!ws || !ws['!ref']) return;
     const a3 = ws['A3'] && String(ws['A3'].v||'').trim().toLowerCase();
@@ -650,6 +662,7 @@ function pfParseEquipWorkbook(wb){
     });
     if(!Object.keys(dayCols).length) return;
     const qrid = pfSheetToQrid(name.trim(), list);
+    if(qrid) seen.add(qrid);
     for(let ri=3; ri<rows.length; ri++){
       const r = rows[ri];
       // the "Operator" label (spelled Operator / Opearator) sits in column A on some sheets and column B on others
@@ -677,7 +690,7 @@ function pfParseEquipWorkbook(wb){
     if(c.v && typeof c.v.getTime==='function'){ const r = new Date(c.v.getTime() + 12*3600*1000); refDate = new Date(r.getFullYear(), r.getMonth(), r.getDate()); }
     else if(typeof c.v==='number'){ const p = XLSX.SSF.parse_date_code(c.v); if(p) refDate = new Date(p.y, p.m-1, p.d); }
   }
-  return {records, refDate, unmatched:Object.values(unmatched)};
+  return {records, refDate, unmatched:Object.values(unmatched), seen:[...seen]};
 }
 
 async function pfHandleFile(file){
@@ -688,6 +701,7 @@ async function pfHandleFile(file){
     const parsed = equipFmt ? pfParseEquipWorkbook(wb) : pfParseWorkbook(wb);
     const {records, refDate} = parsed;
     pfUnmatched = equipFmt ? (parsed.unmatched||[]) : [];
+    pfSeen = new Set(equipFmt ? (parsed.seen||[]) : []);
     if(!records.length){
       toast('분석 실패: 이 파일에서 일별 실적 데이터를 찾지 못했습니다.');
       return false;
@@ -718,6 +732,7 @@ async function pfHandleFile(file){
     pfRefDate = equipFmt ? ((refDate && !isNaN(refDate)) ? refDate : (fromNumName || fromFilename || new Date())) : (fromFilename || fromSheet || new Date());
     pfDayIndex = pfBuildDayIndex(records);
     pfEquipReport = pfBuildEquipmentReport(records);
+    pfSeen.forEach(q=>{ if(!pfEquipReport[q]) pfEquipReport[q] = {}; });
     pfFileName = file.name;
     const today = new Date();
     if(today.getFullYear()===pfRefDate.getFullYear() && today.getMonth()===pfRefDate.getMonth()){
@@ -792,7 +807,8 @@ async function pfSaveSharedStatus(){
     uploadedAt: pfUploadedAt,
     uploadedBy: pfUploadedBy,
     flatIndex,
-    reportFlat
+    reportFlat,
+    seen: Array.from(pfSeen)
   });
   return true;
 }
@@ -809,6 +825,7 @@ async function pfLoadSharedStatus(){
     });
     pfDayIndex = idx;
     const report = {};
+    (data.seen||[]).forEach(q=>{ if(!report[q]) report[q] = {}; });
     (data.reportFlat||[]).forEach(({qrid, day, day_, night_, opd, opn})=>{
       report[qrid] = report[qrid] || {};
       report[qrid][day] = {day: day_||{}, night: night_||{}, opd: opd||[], opn: opn||[]};
@@ -862,12 +879,13 @@ function pfRenderBar(onChange){
   return `
     <div class="toolbar" id="pfBar" style="background:#fff;border:1px solid #e3e1da;border-radius:10px;padding:10px 12px;flex-wrap:wrap;">
       <label class="mono" style="font-size:11px;color:#7c8493;">실적파일</label>
-      <label class="btn ghost small" style="cursor:pointer;">${pfActive? '다른 파일 선택' : '엑셀 업로드'}<input type="file" id="pfFileInput" accept=".xlsx,.xls" style="display:none;"></label>
+      <label class="pf-upload-btn">📂 ${pfActive? '다른 파일 선택 (엑셀 업로드)' : '생산실적 엑셀 업로드'}<input type="file" id="pfFileInput" accept=".xlsx,.xls" style="display:none;"></label>
+      ${pfActive ? '<span class="pf-upload-hint">← 새 생산실적 엑셀을 올리려면 이 버튼을 누르세요</span>' : ''}
       ${pfActive ? `
         <span class="mono" style="font-size:11px;color:#7c8493;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${pfFileName}</span>
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
-        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-03d (설비 클릭 시 입력화면 제거)</span>` : ''}
+        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-05a (가동일수·가동률, 업로드 버튼 강조)</span>` : ''}
       ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀(제품별 시트·설비별 시트 형식 모두 가능)을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다. 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
@@ -1710,6 +1728,29 @@ async function renderInputPage(key){
 
 // ---------- Equipment production report ----------
 let prodReportBuilding = null;
+let prodReportSort = 'default';   // 'default' | 'rate' (lowest utilisation first)
+// Period = first day .. last day that has any production in the uploaded file
+function pfPeriod(){
+  let lo = 99, hi = 0;
+  Object.values(pfEquipReport||{}).forEach(days=>{
+    Object.keys(days).forEach(k=>{
+      const d = parseInt(k), x = days[k];
+      const has = x && ((x.day && Object.keys(x.day).length) || (x.night && Object.keys(x.night).length));
+      if(has){ if(d<lo) lo = d; if(d>hi) hi = d; }
+    });
+  });
+  return hi ? {first:lo, last:hi, total:hi-lo+1} : null;
+}
+function pfEquipStats(data, per){
+  let active = 0, dayN = 0, nightN = 0;
+  for(let d=per.first; d<=per.last; d++){
+    const x = data[d] || {};
+    const hd = x.day && Object.keys(x.day).length, hn = x.night && Object.keys(x.night).length;
+    if(hd) dayN++; if(hn) nightN++; if(hd || hn) active++;
+  }
+  return {active, day:dayN, night:nightN, total:per.total, rate: per.total ? active/per.total : 0};
+}
+function pfRateColor(r){ return r>=0.8 ? '#3f9d5e' : (r>=0.5 ? '#e8892f' : '#d5453a'); }
 function daysInMonth(refDate){
   return new Date(refDate.getFullYear(), refDate.getMonth()+1, 0).getDate();
 }
@@ -1746,11 +1787,13 @@ async function renderProdReport(main){
   const qridList = prodReportBuilding ? byBuilding[prodReportBuilding] : [];
 
   const nDays = daysInMonth(pfRefDate);
+  const per = pfPeriod();
   const dateHeaders = Array.from({length:nDays}, (_,i)=>`<th>${pfRefDate.getMonth()+1}/${i+1}</th>`).join('');
 
   function shiftCells(data, key){
     let cells = '';
     for(let d=1; d<=nDays; d++){
+      if(per && (d<per.first || d>per.last)){ cells += '<td class="pr-out">–</td>'; continue; }   // outside the file period: not reported, not a stoppage
       const bucket = (data[d]||{})[key] || {};
       const empty = !Object.keys(bucket).length;
       const ops = (data[d]||{})[key==='day'?'opd':'opn'] || [];
@@ -1759,29 +1802,46 @@ async function renderProdReport(main){
     return cells;
   }
   let bodyRows = '';
-  qridList.forEach(qrid=>{
+  const rowsInfo = qridList.map(q=>({q, st: per ? pfEquipStats(pfEquipReport[q]||{}, per) : null}));
+  if(prodReportSort==='rate' && per) rowsInfo.sort((a,b)=> a.st.rate - b.st.rate || a.q.localeCompare(b.q));
+  rowsInfo.forEach(({q:qrid, st})=>{
     const data = pfEquipReport[qrid] || {};
-    bodyRows += `<tr class="pr-eqfirst"><th class="pr-rowhead" rowspan="2">${effectiveLabel(qrid)}</th><th class="pr-shifthead">주간</th>${shiftCells(data,'day')}</tr>`;
+    const statHtml = st ? `<div class="pr-stat">가동 ${st.active}/${st.total}일 · <span style="color:${pfRateColor(st.rate)}">${(st.rate*100).toFixed(1)}%</span></div>
+      <div class="pr-stat2">주간 ${st.day}일 · 야간 ${st.night}일</div>
+      <div class="pr-bar"><span style="width:${(st.rate*100).toFixed(1)}%;background:${pfRateColor(st.rate)};"></span></div>` : '';
+    bodyRows += `<tr class="pr-eqfirst"><th class="pr-rowhead" rowspan="2">${effectiveLabel(qrid)}${statHtml}</th><th class="pr-shifthead">주간</th>${shiftCells(data,'day')}</tr>`;
     bodyRows += `<tr><th class="pr-shifthead">야간</th>${shiftCells(data,'night')}</tr>`;
   });
+  // summary for the tab that is open
+  let summaryHtml = '';
+  if(per && rowsInfo.length){
+    const avg = rowsInfo.reduce((s,r)=>s+r.st.rate,0)/rowsInfo.length;
+    const zero = rowsInfo.filter(r=>r.st.active===0).length;
+    const full = rowsInfo.filter(r=>r.st.rate>=0.8).length;
+    const m = pfRefDate.getMonth()+1;
+    summaryHtml = `<div class="pr-summary">📅 <b>기간 ${m}/${per.first} ~ ${m}/${per.last} (${per.total}일)</b> · 이 탭 설비 <b>${rowsInfo.length}대</b> · 평균 가동률 <b style="color:${pfRateColor(avg)}">${(avg*100).toFixed(1)}%</b> · 가동률 80% 이상 <b>${full}대</b> · 기간 내 한 번도 안 돌아간 설비 <b style="color:${zero?'#d5453a':'inherit'}">${zero}대</b></div>`;
+  }
 
   body.innerHTML = `
     <div class="toolbar" style="margin-top:12px;">
       <div class="tabs">${buildings.map(b=>`<button class="${b===prodReportBuilding?'active':''}" data-b="${b}">${b}</button>`).join('')}</div>
-      <button class="btn ghost small" id="prodReportExportBtn" style="margin-left:auto;">전체 설비 엑셀로 다운로드</button>
+      <button class="btn ghost small" id="prodReportSortBtn" style="margin-left:auto;">${prodReportSort==='rate' ? '기본 순서로 보기' : '가동률 낮은 순으로 정렬'}</button>
+      <button class="btn ghost small" id="prodReportExportBtn">전체 설비 엑셀로 다운로드</button>
     </div>
+    ${summaryHtml}
     <div class="card" style="margin-top:12px;padding:0;overflow:auto;max-width:100%;max-height:75vh;">
       <table class="pr-table pr-wide">
         <thead><tr><th class="pr-rowhead">설비</th><th class="pr-shifthead">구분</th>${dateHeaders}</tr></thead>
         <tbody>${bodyRows}</tbody>
       </table>
     </div>
-    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">빨간 바탕("가동없음")은 그 교대시간에 실적이 없었던 날입니다. 👤는 그 교대에 입력된 작업자입니다. "기타" 탭은 배치도 설비 목록에 없는 설비(교정기 등)입니다. 인원/설비 문제 등으로 자주 비가동이면 원인 확인이 필요합니다. 표는 상하좌우로 스크롤됩니다.</p>
+    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">가동일 = 주간 또는 야간에 실적이 한 번이라도 있는 날, 가동률 = 가동일 ÷ 기간 전체 일수(첫날~마지막날, 휴일 포함)입니다. 빨간 바탕("가동없음")은 그 교대시간에 실적이 없었던 날, "–"는 파일 기간 밖의 날입니다. 👤는 그 교대에 입력된 작업자입니다. "기타" 탭은 배치도 설비 목록에 없는 설비(교정기 등)입니다. 인원/설비 문제 등으로 자주 비가동이면 원인 확인이 필요합니다. 표는 상하좌우로 스크롤됩니다.</p>
   `;
   body.querySelectorAll('.tabs button').forEach(btn=>{
     btn.onclick = ()=>{ prodReportBuilding = btn.dataset.b; renderProdReport(main); };
   });
   document.getElementById('prodReportExportBtn').onclick = exportProdReportExcel;
+  document.getElementById('prodReportSortBtn').onclick = ()=>{ prodReportSort = prodReportSort==='rate' ? 'default' : 'rate'; renderProdReport(main); };
 }
 async function exportProdReportExcel(){
   const nDays = daysInMonth(pfRefDate);
@@ -1822,6 +1882,30 @@ async function exportProdReportExcel(){
     });
   });
   ws.views = [{state:'frozen', xSplit:2, ySplit:1}];
+
+  // second sheet: days operated / utilisation per equipment over the file's period
+  const per = pfPeriod();
+  if(per){
+    const ws2 = wb.addWorksheet('설비별 가동일수');
+    ws2.columns = [
+      {header:'공장동', key:'b', width:9}, {header:'설비고유번호', key:'q', width:26},
+      {header:'기간 전체 일수', key:'t', width:14}, {header:'가동일수', key:'a', width:10},
+      {header:'주간 가동일', key:'dd', width:12}, {header:'야간 가동일', key:'nn', width:12}, {header:'가동률', key:'r', width:10},
+    ];
+    ws2.getRow(1).font = {bold:true}; ws2.getRow(1).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFF0EFEA'}};
+    const m = pfRefDate.getMonth()+1;
+    const bOf = q=>{ const e = EQUIP.find(x=>x.qrid===q); if(e) return e.building; const c = Object.values(customEquipment||{}).find(x=>x.qrid===q); return c ? c.building : '기타'; };
+    const list = Object.keys(pfEquipReport).map(q=>({q, b:bOf(q), st:pfEquipStats(pfEquipReport[q]||{}, per)}))
+      .sort((x,y)=> x.b.localeCompare(y.b) || x.st.rate - y.st.rate || x.q.localeCompare(y.q));
+    list.forEach(({q,b,st})=>{
+      const row = ws2.addRow({b, q:effectiveLabel(q), t:st.total, a:st.active, dd:st.day, nn:st.night, r:st.rate});
+      row.getCell(7).numFmt = '0.0%';
+      if(st.rate < 0.5){ row.getCell(7).font = {color:{argb:'FFD5453A'}, bold:true}; }
+    });
+    ws2.addRow([]);
+    ws2.addRow({b:`기간: ${m}/${per.first} ~ ${m}/${per.last} (${per.total}일, 휴일 포함) · 가동일 = 주간 또는 야간 실적이 있는 날 · 가동률 = 가동일 ÷ 기간 전체 일수`});
+    ws2.views = [{state:'frozen', ySplit:1}];
+  }
 
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
