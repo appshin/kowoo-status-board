@@ -955,7 +955,7 @@ function pfRenderBar(onChange){
         ${monthChips ? '<span class="pf-mchips">'+monthChips+'</span>' : ''}
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
-        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18e (주간/야간 구분 그래프·품목별 총생산)</span>` : ''}
+        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18f (품목별 생산실적 탭)</span>` : ''}
       ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀(제품별 시트·설비별 시트 형식 모두 가능)을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다. 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
@@ -1194,6 +1194,7 @@ const PAGES = [
   {id:'dash', label:'대시보드'},
   {id:'layout', label:'배치도 현황'},
   {id:'prodreport', label:'설비별 생산실적', desktopOnly:true},
+  {id:'itemreport', label:'품목별 생산실적', desktopOnly:true},
   {id:'worker', label:'현장 입력', mobileOnly:true},
   {id:'qr', label:'설비 QR코드', desktopOnly:true},
   {id:'prodqr', label:'품목 QR코드', desktopOnly:true},
@@ -1322,6 +1323,7 @@ async function render(){
   else if(currentPage==='qr') renderQr(main);
   else if(currentPage==='prodqr') renderProductQr(main);
   else if(currentPage==='prodreport') renderProdReport(main);
+  else if(currentPage==='itemreport') renderItemReport(main);
   else if(currentPage==='worker') renderWorkerEntry(main);
 }
 
@@ -1963,6 +1965,7 @@ function pfTrendSvg(vals, opts){
   vals.forEach((v,i)=>{
     const x = i*10+1;
     if(v.qty===null){ g += `<rect x="${x}" y="${H-4}" width="8" height="4" fill="#d9d6cc"/>`; return; }
+    if(!v.active && opts.quiet){ g += `<rect x="${x}" y="${H-2}" width="8" height="2" fill="#e4e1d6"/>`; return; }
     if(!v.active && !(opts.sum)){ g += `<rect x="${x}" y="${H-5}" width="8" height="5" fill="#e0675d"><title>${pfMD(v.date)} 비가동</title></rect>`; return; }
     const h = v.qty>0 ? Math.max(3, v.qty/max*(H-6)) : (opts.sum? 3 : 3);
     const col = (opts.sum && v.qty===0) ? '#e0675d' : (opts.color||'#4b8f6a');
@@ -2272,6 +2275,155 @@ async function exportProdReportExcel(){
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+
+// ================= 품목별 생산실적 (item-centred view) =================
+let itemReportProd = null, itemReportFilter = '';
+function pfUnsanKey(k){ return String(k).replace(/․/g,'.').replace(/＃/g,'#').replace(/＄/g,'$').replace(/／/g,'/').replace(/［/g,'[').replace(/］/g,']'); }
+function pfBuildingOf(q){
+  const e = EQUIP.find(x=>x.qrid===q); if(e) return e.building;
+  const c = Object.values(customEquipment||{}).find(x=>x.qrid===q); return c ? c.building : '기타';
+}
+function pfProductSummary(){
+  const out = {};
+  pfMonthKeys().forEach(k=>{
+    Object.entries(pfMonths[k].report||{}).forEach(([q,days])=>{
+      Object.values(days).forEach(x=>{
+        ['day','night'].forEach(sh=>{
+          Object.entries((x&&x[sh])||{}).forEach(([p,v])=>{
+            const pk = pfSanKey(p); const o = out[pk] = out[pk] || {key:pk, name:pfUnsanKey(p), day:0, night:0, eq:new Set()};
+            o[sh] += v; o.eq.add(q);
+          });
+        });
+      });
+    });
+  });
+  Object.values(out).forEach(o=>o.total = o.day+o.night);
+  return out;
+}
+// per equipment daily qty of ONE product: {qrid:{day:[..], night:[..]}} aligned with dates
+function pfProductSeries(pk, dates){
+  const per = {};
+  dates.forEach((o,i)=>{
+    if(!o.has) return;
+    Object.entries(pfMonths[o.key].report||{}).forEach(([q,days])=>{
+      const x = days[o.day]; if(!x) return;
+      ['day','night'].forEach(sh=>{
+        Object.entries(x[sh]||{}).forEach(([p,v])=>{
+          if(pfSanKey(p)!==pk) return;
+          const e = per[q] = per[q] || {day:new Array(dates.length).fill(0), night:new Array(dates.length).fill(0)};
+          e[sh][i] += v;
+        });
+      });
+    });
+  });
+  return per;
+}
+function pfSeriesArr(dates, arr){
+  return dates.map((o,i)=> o.has ? {date:o.date,key:o.key,day:o.day,qty:arr[i],active:arr[i]>0} : {date:o.date,key:o.key,day:o.day,qty:null,active:false});
+}
+async function renderItemReport(main){
+  main.innerHTML = `<div id="pfBarWrap4"></div><div id="itemReportBody">불러오는 중...</div>`;
+  document.getElementById('pfBarWrap4').innerHTML = pfRenderBar();
+  pfWireBar(document.getElementById('pfBarWrap4'), ()=>{ renderItemReport(main); });
+  const body = document.getElementById('itemReportBody');
+  if(!pfActive || !pfMonthKeys().length){
+    body.innerHTML = `<div class="card" style="margin-top:16px;"><p style="color:#7c8493;font-size:13.5px;">위에서 생산실적 엑셀 파일을 먼저 올려주세요. 품목을 고르면 F1·F2·F3 전체에서 그 품목을 어느 설비가 언제(주간/야간) 얼마나 생산했는지 보여드립니다.</p></div>`;
+    return;
+  }
+  const dates = pfAllDates();
+  const summ = pfProductSummary();
+  const plist = Object.values(summ).sort((a,b)=>b.total-a.total || a.name.localeCompare(b.name));
+  if(!plist.length){ body.innerHTML = '<div class="card" style="margin-top:16px;color:#7c8493;">품목 실적이 없습니다.</div>'; return; }
+  if(!itemReportProd || !summ[itemReportProd]) itemReportProd = plist[0].key;
+  const f = itemReportFilter.trim().toLowerCase();
+  const opts = plist.filter(o=>!f || o.name.toLowerCase().includes(f) || o.key===itemReportProd);
+  const cur = summ[itemReportProd];
+  const per = pfProductSeries(itemReportProd, dates);
+  const DAYC = '#e3a72f', NIGHTC = '#5a6cb0';
+  // per-equipment rows
+  const rows = Object.keys(per).map(q=>{
+    const e = per[q], dq = e.day.reduce((a,c)=>a+c,0), nq = e.night.reduce((a,c)=>a+c,0);
+    return {q, b:pfBuildingOf(q), dq, nq, tq:dq+nq, dDays:e.day.filter(v=>v>0).length, nDays:e.night.filter(v=>v>0).length, e};
+  }).sort((a,b)=>b.tq-a.tq);
+  const mx = Math.max(1, ...rows.map(r=>Math.max(...r.e.day, ...r.e.night)));
+  // product total per date
+  const sumD = dates.map((_,i)=>rows.reduce((a,r)=>a+r.e.day[i],0)), sumN = dates.map((_,i)=>rows.reduce((a,r)=>a+r.e.night[i],0));
+  const sMax = Math.max(1, ...sumD, ...sumN);
+  const bOrder = ['F1','F2','F3'];
+  const groups = {}; rows.forEach(r=>(groups[r.b]=groups[r.b]||[]).push(r));
+  const gKeys = Object.keys(groups).sort((a,b)=>{ const ia=bOrder.indexOf(a), ib=bOrder.indexOf(b); return (ia<0?9:ia)-(ib<0?9:ib) || a.localeCompare(b); });
+  const blk = (lab,col,arr,sub,m)=>`<div style="display:grid;grid-template-columns:86px 1fr;gap:8px;align-items:center;margin:3px 0;">
+      <div style="font-size:11px;line-height:1.3;"><b style="color:${col};">${lab}</b><br><span style="color:#4a5260;">${sub}</span></div>
+      <div>${pfTrendSvg(pfSeriesArr(dates,arr),{h:30,color:col,max:m,quiet:true})}</div></div>`;
+  const first = dates[0].date, last = dates[dates.length-1].date;
+  const gSummary = gKeys.map(g=>`${g} <b>${groups[g].length}대</b>`).join(' · ');
+  body.innerHTML = `
+    <div class="toolbar" style="margin-top:12px;gap:8px;flex-wrap:wrap;">
+      <label class="mono" style="font-size:11px;color:#7c8493;">품목</label>
+      <input type="search" id="itemFilter" placeholder="품목명 검색" value="${itemReportFilter.replace(/"/g,'&quot;')}" style="padding:7px 10px;border:1px solid #d9d6cc;border-radius:8px;font-size:13px;width:160px;">
+      <select id="itemSelect" style="padding:7px 10px;border:1px solid #d9d6cc;border-radius:8px;font-size:13px;min-width:280px;max-width:520px;">
+        ${opts.map(o=>`<option value="${o.key}" ${o.key===itemReportProd?'selected':''}>${o.name} — ${fmt(o.total)}개 · ${o.eq.size}대</option>`).join('')}
+      </select>
+      <span style="font-size:11.5px;color:#9aa3ad;">(품목 ${plist.length}개 · 총 생산량 많은 순)</span>
+      <button class="btn ghost small" id="itemExportBtn" style="margin-left:auto;">엑셀로 다운로드</button>
+    </div>
+    <div class="pr-summary">🏭 <b style="font-size:14px;">${cur.name}</b> · 기간 ${pfMD(first)} ~ ${pfMD(last)} (${dates.length}일) · 총 생산 <b>${fmt(cur.total)}개</b> (☀ 주간 <b>${fmt(cur.day)}</b> · 🌙 야간 <b>${fmt(cur.night)}</b>) · 생산 설비 <b>${rows.length}대</b> (${gSummary})</div>
+    <div class="card" style="margin-top:12px;padding:12px 14px;width:100%;max-width:none;box-sizing:border-box;">
+      <div style="font-size:12px;font-weight:700;color:#4a5260;margin-bottom:6px;">${cur.name} — 전체 설비 합계 일별 생산수량</div>
+      ${blk('☀ 주간',DAYC,sumD,fmt(cur.day)+'개',sMax)}
+      ${blk('🌙 야간',NIGHTC,sumN,fmt(cur.night)+'개',sMax)}
+      <div style="padding-left:94px;">${pfTrendAxis(pfSeriesArr(dates,sumD))}</div>
+    </div>
+    ${gKeys.map(g=>{
+      const gr = groups[g], gd = gr.reduce((a,r)=>a+r.dq,0), gn = gr.reduce((a,r)=>a+r.nq,0);
+      return `<div class="card" style="margin-top:12px;padding:6px 14px;width:100%;max-width:none;box-sizing:border-box;">
+        <div style="padding:10px 0 6px;border-bottom:2px solid #2b3340;font-weight:800;font-size:14px;">${g} <span style="font-weight:600;font-size:12px;color:#4a5260;">· 설비 ${gr.length}대 · 합계 ${fmt(gd+gn)}개 (주간 ${fmt(gd)} · 야간 ${fmt(gn)})</span></div>
+        ${gr.map(r=>`
+        <div style="display:grid;grid-template-columns:minmax(220px,320px) 1fr;gap:18px;align-items:start;padding:12px 0;border-bottom:1px solid #f0eee8;">
+          <div>
+            <div style="font-weight:700;font-size:14px;">${effectiveLabel(r.q)}</div>
+            <div style="font-size:12px;color:#4a5260;margin-top:2px;">총 <b>${fmt(r.tq)}개</b></div>
+            <div style="font-size:11.5px;color:#4a5260;">☀ 주간 ${fmt(r.dq)}개 (${r.dDays}일) · 🌙 야간 ${fmt(r.nq)}개 (${r.nDays}일)</div>
+            <div style="font-size:11px;color:#9aa3ad;">이 품목 점유 ${(r.tq/cur.total*100).toFixed(1)}%</div>
+          </div>
+          <div>
+            ${blk('☀ 주간',DAYC,r.e.day,r.dDays+'일 생산',mx)}
+            ${blk('🌙 야간',NIGHTC,r.e.night,r.nDays+'일 생산',mx)}
+            <div style="padding-left:94px;">${pfTrendAxis(pfSeriesArr(dates,r.e.day))}</div>
+          </div>
+        </div>`).join('')}
+      </div>`;}).join('')}
+    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">막대 = 그날 이 품목의 생산수량(이 품목을 만든 설비들 사이에서 같은 눈금) · 막대 없음 = 그날 이 설비가 이 품목을 만들지 않음(다른 품목 생산 또는 비가동) · 회색 = 그 달 파일 미업로드 · 파란 띠 = 선택한 날짜 · 막대에 마우스를 올리면 날짜·수량이 보입니다.</p>`;
+  const sel = document.getElementById('itemSelect');
+  sel.onchange = ()=>{ itemReportProd = sel.value; renderItemReport(main); };
+  const flt = document.getElementById('itemFilter');
+  flt.oninput = ()=>{ itemReportFilter = flt.value; clearTimeout(window.__itemFT); window.__itemFT = setTimeout(()=>{ renderItemReport(main).then(()=>{ const f2 = document.getElementById('itemFilter'); if(f2){ f2.focus(); f2.setSelectionRange(f2.value.length,f2.value.length);} }); }, 350); };
+  document.getElementById('itemExportBtn').onclick = ()=>exportItemReportExcel(summ, plist, dates, cur, rows, per);
+}
+async function exportItemReportExcel(summ, plist, dates, cur, rows, per){
+  const wb = new ExcelJS.Workbook();
+  const hdr = ws=>{ ws.getRow(1).font = {bold:true}; ws.getRow(1).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFF0EFEA'}}; ws.views=[{state:'frozen', ySplit:1}]; };
+  const w1 = wb.addWorksheet('전체 품목 요약');
+  w1.columns = [{header:'품목',width:30},{header:'총 생산',width:12},{header:'주간',width:12},{header:'야간',width:12},{header:'생산 설비 수',width:12},{header:'생산 설비',width:60}];
+  plist.forEach(o=>w1.addRow([o.name, Math.round(o.total), Math.round(o.day), Math.round(o.night), o.eq.size, [...o.eq].sort().map(effectiveLabel).join(', ')]));
+  hdr(w1);
+  const nm = cur.name.replace(/[\\\/\?\*\[\]:]/g,'_').slice(0,18);
+  const w2 = wb.addWorksheet(nm+' 설비별');
+  w2.columns = [{header:'공장동',width:8},{header:'설비',width:24},{header:'총 생산',width:12},{header:'주간 수량',width:12},{header:'주간 생산일',width:11},{header:'야간 수량',width:12},{header:'야간 생산일',width:11}];
+  rows.forEach(r=>w2.addRow([r.b, effectiveLabel(r.q), Math.round(r.tq), Math.round(r.dq), r.dDays, Math.round(r.nq), r.nDays]));
+  hdr(w2);
+  const w3 = wb.addWorksheet(nm+' 일별');
+  w3.columns = [{header:'설비',width:24},{header:'구분',width:8}, ...dates.map(o=>({header:pfMD(o.date),width:9}))];
+  rows.forEach(r=>['day','night'].forEach(sh=>{
+    const row = w3.addRow([effectiveLabel(r.q), sh==='day'?'주간':'야간', ...r.e[sh].map((v,i)=> !dates[i].has ? '' : (v>0?Math.round(v):''))]);
+    r.e[sh].forEach((v,i)=>{ if(v>0){ row.getCell(3+i).fill = {type:'pattern', pattern:'solid', fgColor:{argb: sh==='day'?'FFFCEBC4':'FFD8DDF2'}}; } });
+  }));
+  w3.views=[{state:'frozen', xSplit:2, ySplit:1}]; w3.getRow(1).font={bold:true};
+  const buf = await wb.xlsx.writeBuffer();
+  const url = URL.createObjectURL(new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+  const a = document.createElement('a'); a.href = url; a.download = `품목별_생산실적_${nm}.xlsx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
 }
 
 // ---------- QR management ----------
