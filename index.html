@@ -703,7 +703,7 @@ function pfParseEquipWorkbook(wb){
 }
 
 let pfApplyState = null; // {ok:true,t:ms,shared:bool}
-const pfTick = ()=>new Promise(r=>setTimeout(r,30));
+const pfTick = ()=>new Promise(r=>{ let d=false; const go=()=>{ if(!d){d=true;r();} }; if(window.requestAnimationFrame){ requestAnimationFrame(()=>requestAnimationFrame(()=>setTimeout(go,0))); } setTimeout(go,120); });
 function pfProg(pct, msg, fname){
   let ov = document.getElementById('pfProgOv');
   if(!ov){
@@ -720,7 +720,7 @@ function pfProg(pct, msg, fname){
 function pfProgClose(delay){ setTimeout(()=>{ const o=document.getElementById('pfProgOv'); if(o) o.remove(); }, delay||0); }
 async function pfHandleFile(file){
   pfApplyState = null;
-  pfProg(2,'파일 읽는 중…', file.name); await pfTick();
+  pfProg(3,'파일 읽는 중…', file.name); await pfTick();
   try{
     const buf = await file.arrayBuffer();
     pfProg(15,'엑셀 시트 분석 중…'); await pfTick();
@@ -926,7 +926,7 @@ function pfRenderBar(onChange){
         <span class="mono" style="font-size:11px;color:#7c8493;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${pfFileName}</span>
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
-        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18a (업로드 진행율 바)</span>` : ''}
+        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18b (업로드 팝업 즉시 표시)</span>` : ''}
       ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀(제품별 시트·설비별 시트 형식 모두 가능)을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다. 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
@@ -936,6 +936,7 @@ function pfWireBar(container, onChange){
   if(fileInput) fileInput.onchange = async (e)=>{
     if(!e.target.files[0]) return;
     const f = e.target.files[0];
+    pfProg(0,'파일 선택됨 — 준비 중…', f.name);   // popup first, instantly
     fileInput.disabled = true;
     const ok = await pfHandleFile(f);
     if(ok){
