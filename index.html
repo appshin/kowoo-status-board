@@ -246,6 +246,15 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .prod-modal-ops b{color:#333;margin-right:4px;}
 
 .pf-upload-btn{display:inline-flex;align-items:center;gap:6px;cursor:pointer;background:#dd8a33;color:#fff;font-weight:700;font-size:14px;padding:9px 16px;border-radius:8px;border:0;box-shadow:0 2px 6px rgba(221,138,51,.4);transition:transform .08s,box-shadow .08s,background .08s;white-space:nowrap;}
+#pfProgOv{position:fixed;inset:0;z-index:99999;background:rgba(20,24,32,.55);display:flex;align-items:center;justify-content:center;}
+#pfProgOv .box{background:#fff;border-radius:14px;padding:22px 24px;width:min(440px,90vw);box-shadow:0 12px 40px rgba(0,0,0,.35);}
+#pfProgOv .ttl{font-weight:800;font-size:15px;color:#2b3340;margin-bottom:4px;}
+#pfProgOv .fn{font-size:11.5px;color:#7c8493;margin-bottom:14px;word-break:break-all;}
+#pfProgOv .trk{height:18px;background:#e8e6df;border-radius:9px;overflow:hidden;}
+#pfProgOv .fil{height:100%;width:0;background:linear-gradient(90deg,#dd8a33,#f0a955);transition:width .25s ease;}
+#pfProgOv.done .fil{background:#2e9d5b;} #pfProgOv.err .fil{background:#d64545;}
+#pfProgOv .pct{display:flex;justify-content:space-between;margin-top:8px;font-size:13px;font-weight:700;color:#2b3340;}
+#pfProgOv .msg{font-size:12px;color:#7c8493;font-weight:500;}
 .pf-upload-btn:hover{background:#c9772a;box-shadow:0 4px 10px rgba(201,119,42,.45);transform:translateY(-1px);}
 .pf-upload-hint{font-size:12px;color:#c9772a;font-weight:600;}
 .pr-stat{margin-top:6px;font-size:11.5px;font-weight:700;color:#2c3340;white-space:nowrap;}
@@ -693,16 +702,38 @@ function pfParseEquipWorkbook(wb){
   return {records, refDate, unmatched:Object.values(unmatched), seen:[...seen]};
 }
 
+let pfApplyState = null; // {ok:true,t:ms,shared:bool}
+const pfTick = ()=>new Promise(r=>setTimeout(r,30));
+function pfProg(pct, msg, fname){
+  let ov = document.getElementById('pfProgOv');
+  if(!ov){
+    ov = document.createElement('div'); ov.id='pfProgOv';
+    ov.innerHTML = '<div class="box"><div class="ttl">📂 생산실적 파일 반영 중</div><div class="fn"></div><div class="trk"><div class="fil"></div></div><div class="pct"><span class="p">0%</span><span class="msg"></span></div></div>';
+    document.body.appendChild(ov);
+  }
+  if(fname!==undefined) ov.querySelector('.fn').textContent = fname;
+  ov.querySelector('.fil').style.width = pct+'%';
+  ov.querySelector('.p').textContent = Math.round(pct)+'%';
+  ov.querySelector('.msg').textContent = msg||'';
+  return ov;
+}
+function pfProgClose(delay){ setTimeout(()=>{ const o=document.getElementById('pfProgOv'); if(o) o.remove(); }, delay||0); }
 async function pfHandleFile(file){
+  pfApplyState = null;
+  pfProg(2,'파일 읽는 중…', file.name); await pfTick();
   try{
     const buf = await file.arrayBuffer();
+    pfProg(15,'엑셀 시트 분석 중…'); await pfTick();
     const wb = XLSX.read(buf, {type:'array', cellDates:true});
+    pfProg(35,'설비·일자별 실적 추출 중…'); await pfTick();
     const equipFmt = pfIsEquipFormat(wb);
     const parsed = equipFmt ? pfParseEquipWorkbook(wb) : pfParseWorkbook(wb);
     const {records, refDate} = parsed;
     pfUnmatched = equipFmt ? (parsed.unmatched||[]) : [];
     pfSeen = new Set(equipFmt ? (parsed.seen||[]) : []);
     if(!records.length){
+      pfProg(100,'실패'); document.getElementById('pfProgOv').classList.add('err');
+      pfProg(100,'❌ 일별 실적 데이터를 찾지 못했습니다'); pfProgClose(2500);
       toast('분석 실패: 이 파일에서 일별 실적 데이터를 찾지 못했습니다.');
       return false;
     }
@@ -729,6 +760,7 @@ async function pfHandleFile(file){
     let fromNumName = null;
     const nm2 = file.name.match(/(\d{1,2})[_\-.](\d{1,2})[_\-.](20\d{2})/);
     if(nm2 && parseInt(nm2[2])>=1 && parseInt(nm2[2])<=12) fromNumName = new Date(parseInt(nm2[3]), parseInt(nm2[2])-1, 1);
+    pfProg(55,'설비 매칭·집계 중…'); await pfTick();
     pfRefDate = equipFmt ? ((refDate && !isNaN(refDate)) ? refDate : (fromNumName || fromFilename || new Date())) : (fromFilename || fromSheet || new Date());
     pfDayIndex = pfBuildDayIndex(records);
     pfEquipReport = pfBuildEquipmentReport(records);
@@ -746,11 +778,19 @@ async function pfHandleFile(file){
     Object.values(pfDayIndex).forEach(byQrid=>Object.keys(byQrid).forEach(q=>matchedQrids.add(q)));
     pfUploadedBy = (firebase.auth().currentUser && firebase.auth().currentUser.email) || '';
     pfUploadedAt = Date.now();
-    pfSaveSharedStatus().catch(err=>console.error('shared status save failed', err));
+    pfProg(70,'모든 기기에 공유 저장 중…'); await pfTick();
+    let sharedOk = false, ptimer = null;
+    { let cur = 70; ptimer = setInterval(()=>{ cur = Math.min(94, cur+2); pfProg(cur,'모든 기기에 공유 저장 중…'); }, 250); }
+    try{ sharedOk = await Promise.race([pfSaveSharedStatus(), new Promise((_,rj)=>setTimeout(()=>rj(new Error('timeout')),45000))]); }
+    catch(err){ console.error('shared status save failed', err); sharedOk = false; }
+    clearInterval(ptimer);
+    pfProg(97,'화면에 반영 중…'); await pfTick();
+    pfApplyState = {ok:true, t:Date.now(), shared:!!sharedOk};
     toast(`${records.length}건의 일별 실적을 읽었습니다 (설비 ${matchedQrids.size}개 매칭됨${pfUnmatched.length? ', 배치도에 없는 설비 '+pfUnmatched.length+'개는 설비별 생산실적의 "기타" 탭에서 확인' : ''}).`);
     return true;
   }catch(err){
     console.error(err);
+    const o = pfProg(100,'❌ 파일을 읽을 수 없습니다'); o.classList.add('err'); pfProgClose(2500);
     toast('오류: 파일을 읽을 수 없습니다.');
     return false;
   }
@@ -882,10 +922,11 @@ function pfRenderBar(onChange){
       <label class="pf-upload-btn">📂 ${pfActive? '다른 파일 선택 (엑셀 업로드)' : '생산실적 엑셀 업로드'}<input type="file" id="pfFileInput" accept=".xlsx,.xls" style="display:none;"></label>
       ${pfActive ? '<span class="pf-upload-hint">← 새 생산실적 엑셀을 올리려면 이 버튼을 누르세요</span>' : ''}
       ${pfActive ? `
+        <span style="font-size:11.5px;font-weight:700;color:#2e9d5b;background:#e7f6ed;border-radius:6px;padding:3px 8px;">✅ 반영 100%</span>
         <span class="mono" style="font-size:11px;color:#7c8493;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${pfFileName}</span>
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
-        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-05a (가동일수·가동률, 업로드 버튼 강조)</span>` : ''}
+        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18a (업로드 진행율 바)</span>` : ''}
       ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀(제품별 시트·설비별 시트 형식 모두 가능)을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다. 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
@@ -894,8 +935,16 @@ function pfWireBar(container, onChange){
   const fileInput = container.querySelector('#pfFileInput');
   if(fileInput) fileInput.onchange = async (e)=>{
     if(!e.target.files[0]) return;
-    const ok = await pfHandleFile(e.target.files[0]);
-    if(ok) onChange();
+    const f = e.target.files[0];
+    fileInput.disabled = true;
+    const ok = await pfHandleFile(f);
+    if(ok){
+      onChange();   // data views render only now
+      const o = pfProg(100, pfApplyState && pfApplyState.shared ? '✅ 반영 완료 — 공유 저장됨' : '⚠️ 이 기기에는 반영됨 (공유 저장 실패)');
+      o.classList.add('done'); if(!(pfApplyState&&pfApplyState.shared)) o.classList.remove('done');
+      pfProgClose(1100);
+    }
+    const again = document.getElementById('pfFileInput'); if(again) again.disabled = false;
   };
   const datePick = container.querySelector('#pfDatePick');
   if(datePick) datePick.onchange = (e)=>{
