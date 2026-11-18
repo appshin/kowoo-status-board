@@ -926,15 +926,38 @@ function pfRenderBar(onChange){
         <span class="mono" style="font-size:11px;color:#7c8493;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${pfFileName}</span>
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
-        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18b (업로드 팝업 즉시 표시)</span>` : ''}
+        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18c (파일창 닫히면 즉시 팝업)</span>` : ''}
       ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀(제품별 시트·설비별 시트 형식 모두 가능)을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다. 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
 }
 function pfWireBar(container, onChange){
   const fileInput = container.querySelector('#pfFileInput');
+  if(fileInput){
+    // The browser can take several seconds to hand over a big/cloud-synced file AFTER the dialog closes
+    // (the change event fires late). Show the popup as soon as the dialog closes (window focus returns).
+    const dismissWait = ()=>{ if(!window.__pfBusy){ const o=document.getElementById('pfProgOv'); if(o) o.remove(); } };
+    fileInput.addEventListener('click', ()=>{
+      window.__pfBusy = false;
+      const onFocus = ()=>{
+        window.removeEventListener('focus', onFocus);
+        setTimeout(()=>{
+          if(window.__pfBusy || document.getElementById('pfProgOv')) return;
+          const o = pfProg(0,'파일을 불러오는 중입니다… (파일이 크면 몇 초 걸립니다)','');
+          o.querySelector('.fn').textContent = '선택한 파일을 브라우저가 읽어오는 중';
+          o.onclick = dismissWait;   // click to close if nothing was chosen
+          setTimeout(dismissWait, 60000);
+        }, 150);
+      };
+      window.addEventListener('focus', onFocus);
+      setTimeout(()=>window.removeEventListener('focus', onFocus), 120000);
+    });
+    fileInput.addEventListener('cancel', dismissWait);
+  }
   if(fileInput) fileInput.onchange = async (e)=>{
     if(!e.target.files[0]) return;
+    window.__pfBusy = true;
+    { const o0=document.getElementById('pfProgOv'); if(o0) o0.onclick=null; }
     const f = e.target.files[0];
     pfProg(0,'파일 선택됨 — 준비 중…', f.name);   // popup first, instantly
     fileInput.disabled = true;
@@ -945,6 +968,7 @@ function pfWireBar(container, onChange){
       o.classList.add('done'); if(!(pfApplyState&&pfApplyState.shared)) o.classList.remove('done');
       pfProgClose(1100);
     }
+    window.__pfBusy = false;
     const again = document.getElementById('pfFileInput'); if(again) again.disabled = false;
   };
   const datePick = container.querySelector('#pfDatePick');
