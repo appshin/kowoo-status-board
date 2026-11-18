@@ -255,6 +255,7 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 #pfProgOv.done .fil{background:#2e9d5b;} #pfProgOv.err .fil{background:#d64545;}
 #pfProgOv .pct{display:flex;justify-content:space-between;margin-top:8px;font-size:13px;font-weight:700;color:#2b3340;}
 #pfProgOv .msg{font-size:12px;color:#7c8493;font-weight:500;}
+.pf-mchips{display:inline-flex;gap:4px;}.pf-mchip{border:1px solid #d9d6cc;background:#fff;color:#4a5260;border-radius:14px;padding:3px 11px;font-size:12px;font-weight:700;cursor:pointer;}.pf-mchip.on{background:#2b3340;color:#fff;border-color:#2b3340;}
 .pf-upload-btn:hover{background:#c9772a;box-shadow:0 4px 10px rgba(201,119,42,.45);transform:translateY(-1px);}
 .pf-upload-hint{font-size:12px;color:#c9772a;font-weight:600;}
 .pr-stat{margin-top:6px;font-size:11.5px;font-weight:700;color:#2c3340;white-space:nowrap;}
@@ -329,6 +330,8 @@ let pfFileName = '';
 let pfUploadedBy = '';
 let pfUploadedAt = 0;
 let pfEquipReport = null;
+let pfMonths = {};      // 'YYYY-MM' -> {dayIndex, report, seen[], refDate, fileName, uploadedAt, uploadedBy}
+let pfMonthKey = '';
 
 function pfCellStr(v){
   if(v===null || v===undefined) return null;
@@ -718,75 +721,97 @@ function pfProg(pct, msg, fname){
   return ov;
 }
 function pfProgClose(delay){ setTimeout(()=>{ const o=document.getElementById('pfProgOv'); if(o) o.remove(); }, delay||0); }
-async function pfHandleFile(file){
+function pfMKey(d){ return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
+function pfMonthKeys(){ return Object.keys(pfMonths).sort(); }
+function pfUseMonth(key){
+  const m = pfMonths[key]; if(!m) return false;
+  pfMonthKey = key; pfDayIndex = m.dayIndex; pfEquipReport = m.report; pfSeen = new Set(m.seen||[]);
+  pfRefDate = m.refDate; pfFileName = m.fileName||''; pfUploadedAt = m.uploadedAt||0; pfUploadedBy = m.uploadedBy||'';
+  pfActive = true; return true;
+}
+// default date to show: today if it has data, otherwise the last day with data in the newest month
+function pfPickDefaultDate(){
+  const keys = pfMonthKeys(); if(!keys.length) return;
+  const today = new Date(), tk = pfMKey(today);
+  if(pfMonths[tk]){
+    pfUseMonth(tk);
+    if(pfDayIndex[today.getDate()]){ pfSelectedDate = today; return; }
+  } else pfUseMonth(keys[keys.length-1]);
+  const days = Object.keys(pfDayIndex).map(Number).sort((x,y)=>y-x);
+  pfSelectedDate = new Date(pfRefDate.getFullYear(), pfRefDate.getMonth(), days[0]||1);
+}
+// parse ONE excel file -> month entry (no UI side effects except progress callback)
+async function pfParseOne(file, prog){
+  prog(0.05,'파일 읽는 중…'); await pfTick();
+  const buf = await file.arrayBuffer();
+  prog(0.25,'엑셀 시트 분석 중…'); await pfTick();
+  const wb = XLSX.read(buf, {type:'array', cellDates:true});
+  prog(0.55,'설비·일자별 실적 추출 중…'); await pfTick();
+  const equipFmt = pfIsEquipFormat(wb);
+  const parsed = equipFmt ? pfParseEquipWorkbook(wb) : pfParseWorkbook(wb);
+  const {records, refDate} = parsed;
+  if(!records.length) return null;
+  prog(0.8,'설비 매칭·집계 중…'); await pfTick();
+  const MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+  const fnameMatch = file.name.match(/([A-Za-z]{3,9})[_\s-]?(\d{4})/);
+  let fromFilename = null;
+  if(fnameMatch){
+    const monKey = fnameMatch[1].slice(0,3).toLowerCase();
+    if(MONTHS[monKey] !== undefined) fromFilename = new Date(parseInt(fnameMatch[2]), MONTHS[monKey], 1);
+  }
+  const fromSheet = refDate ? new Date(refDate.getUTCFullYear(), refDate.getUTCMonth(), refDate.getUTCDate()) : null;
+  let fromNumName = null;
+  const nm2 = file.name.match(/(\d{1,2})[_\-.](\d{1,2})[_\-.](20\d{2})/);
+  if(nm2 && parseInt(nm2[2])>=1 && parseInt(nm2[2])<=12) fromNumName = new Date(parseInt(nm2[3]), parseInt(nm2[2])-1, 1);
+  const rd = equipFmt ? ((refDate && !isNaN(refDate)) ? refDate : (fromNumName || fromFilename || new Date())) : (fromFilename || fromSheet || new Date());
+  const dayIndex = pfBuildDayIndex(records);
+  const report = pfBuildEquipmentReport(records);
+  const seen = equipFmt ? (parsed.seen||[]) : [];
+  seen.forEach(q=>{ if(!report[q]) report[q] = {}; });
+  const refMonth = new Date(rd.getFullYear(), rd.getMonth(), 1);
+  return {key: pfMKey(refMonth), entry:{dayIndex, report, seen:[...seen], refDate: refMonth, fileName:file.name, uploadedAt:Date.now(), uploadedBy:''},
+          nRec: records.length, unmatched: equipFmt ? (parsed.unmatched||[]) : []};
+}
+async function pfHandleFile(files){
+  files = Array.from(files && files.length!==undefined && !files.name ? files : [files]);
   pfApplyState = null;
-  pfProg(3,'파일 읽는 중…', file.name); await pfTick();
+  const names = files.map(f=>f.name).join(', ');
+  pfProg(3, files.length>1 ? `파일 ${files.length}개 읽는 중…` : '파일 읽는 중…', files.length>1 ? files.length+'개 파일: '+names : files[0].name); await pfTick();
   try{
-    const buf = await file.arrayBuffer();
-    pfProg(15,'엑셀 시트 분석 중…'); await pfTick();
-    const wb = XLSX.read(buf, {type:'array', cellDates:true});
-    pfProg(35,'설비·일자별 실적 추출 중…'); await pfTick();
-    const equipFmt = pfIsEquipFormat(wb);
-    const parsed = equipFmt ? pfParseEquipWorkbook(wb) : pfParseWorkbook(wb);
-    const {records, refDate} = parsed;
-    pfUnmatched = equipFmt ? (parsed.unmatched||[]) : [];
-    pfSeen = new Set(equipFmt ? (parsed.seen||[]) : []);
-    if(!records.length){
+    const touched = []; let totalRec = 0; const unm = new Map(); const failed = [];
+    const by = (firebase.auth().currentUser && firebase.auth().currentUser.email) || '';
+    for(let i=0;i<files.length;i++){
+      const f = files[i];
+      const tag = files.length>1 ? `[${i+1}/${files.length}] ` : '';
+      const res = await pfParseOne(f, (fr,msg)=> pfProg(3 + ((i+fr)/files.length)*62, tag+msg));
+      if(!res){ failed.push(f.name); continue; }
+      res.entry.uploadedBy = by;
+      pfMonths[res.key] = res.entry;       // same month re-uploaded -> replaced; other months untouched
+      if(!touched.includes(res.key)) touched.push(res.key);
+      totalRec += res.nRec;
+      res.unmatched.forEach(u=>unm.set(typeof u==='string'?u:JSON.stringify(u), u));
+    }
+    if(!touched.length){
       pfProg(100,'실패'); document.getElementById('pfProgOv').classList.add('err');
       pfProg(100,'❌ 일별 실적 데이터를 찾지 못했습니다'); pfProgClose(2500);
       toast('분석 실패: 이 파일에서 일별 실적 데이터를 찾지 못했습니다.');
       return false;
     }
-    // Prefer the month/year stated in the file NAME (e.g. "..._21_SEP_2026.xlsx") —
-    // this is far more reliable than parsing in-sheet Date cells, whose conversion
-    // has shown inconsistent behavior across browsers/SheetJS builds. Fall back to
-    // the in-sheet majority-vote date only if the filename doesn't carry one.
-    const MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
-    const fnameMatch = file.name.match(/([A-Za-z]{3,9})[_\s-]?(\d{4})/);
-    let fromFilename = null;
-    if(fnameMatch){
-      const monKey = fnameMatch[1].slice(0,3).toLowerCase();
-      if(MONTHS[monKey] !== undefined){
-        fromFilename = new Date(parseInt(fnameMatch[2]), MONTHS[monKey], 1);
-      }
-    }
-    // Excel/SheetJS dates are anchored at UTC midnight; reading them with local
-    // getters can roll to the previous day in timezones behind UTC. Normalize
-    // to a local-midnight Date for the SAME calendar day so every getFullYear/
-    // getMonth/getDate() call downstream is timezone-safe.
-    const fromSheet = refDate
-      ? new Date(refDate.getUTCFullYear(), refDate.getUTCMonth(), refDate.getUTCDate())
-      : null;
-    let fromNumName = null;
-    const nm2 = file.name.match(/(\d{1,2})[_\-.](\d{1,2})[_\-.](20\d{2})/);
-    if(nm2 && parseInt(nm2[2])>=1 && parseInt(nm2[2])<=12) fromNumName = new Date(parseInt(nm2[3]), parseInt(nm2[2])-1, 1);
-    pfProg(55,'설비 매칭·집계 중…'); await pfTick();
-    pfRefDate = equipFmt ? ((refDate && !isNaN(refDate)) ? refDate : (fromNumName || fromFilename || new Date())) : (fromFilename || fromSheet || new Date());
-    pfDayIndex = pfBuildDayIndex(records);
-    pfEquipReport = pfBuildEquipmentReport(records);
-    pfSeen.forEach(q=>{ if(!pfEquipReport[q]) pfEquipReport[q] = {}; });
-    pfFileName = file.name;
-    const today = new Date();
-    if(today.getFullYear()===pfRefDate.getFullYear() && today.getMonth()===pfRefDate.getMonth()){
-      pfSelectedDate = today;
-    } else {
-      const days = Object.keys(pfDayIndex).map(Number).sort((a,b)=>b-a);
-      pfSelectedDate = new Date(pfRefDate.getFullYear(), pfRefDate.getMonth(), days[0]||1);
-    }
-    pfActive = true;
+    pfUnmatched = [...unm.values()];
+    pfUploadedAt = Date.now(); pfUploadedBy = by;
+    pfPickDefaultDate();
     const matchedQrids = new Set();
     Object.values(pfDayIndex).forEach(byQrid=>Object.keys(byQrid).forEach(q=>matchedQrids.add(q)));
-    pfUploadedBy = (firebase.auth().currentUser && firebase.auth().currentUser.email) || '';
-    pfUploadedAt = Date.now();
     pfProg(70,'모든 기기에 공유 저장 중…'); await pfTick();
     let sharedOk = false, ptimer = null;
     { let cur = 70; ptimer = setInterval(()=>{ cur = Math.min(94, cur+2); pfProg(cur,'모든 기기에 공유 저장 중…'); }, 250); }
-    try{ sharedOk = await Promise.race([pfSaveSharedStatus(), new Promise((_,rj)=>setTimeout(()=>rj(new Error('timeout')),45000))]); }
+    try{ sharedOk = await Promise.race([pfSaveSharedStatus(touched), new Promise((_,rj)=>setTimeout(()=>rj(new Error('timeout')),60000))]); }
     catch(err){ console.error('shared status save failed', err); sharedOk = false; }
     clearInterval(ptimer);
     pfProg(97,'화면에 반영 중…'); await pfTick();
     pfApplyState = {ok:true, t:Date.now(), shared:!!sharedOk};
-    toast(`${records.length}건의 일별 실적을 읽었습니다 (설비 ${matchedQrids.size}개 매칭됨${pfUnmatched.length? ', 배치도에 없는 설비 '+pfUnmatched.length+'개는 설비별 생산실적의 "기타" 탭에서 확인' : ''}).`);
+    const ml = touched.sort().map(k=>parseInt(k.slice(5))+'월').join('·');
+    toast(`${ml} 실적 ${totalRec}건을 반영했습니다 (전체 ${pfMonthKeys().length}개월 연결됨${failed.length? ', 읽지 못한 파일: '+failed.join(', ') : ''}${pfUnmatched.length? ', 배치도에 없는 설비 '+pfUnmatched.length+'개는 "기타" 탭' : ''}).`);
     return true;
   }catch(err){
     console.error(err);
@@ -824,16 +849,15 @@ function pfBuildEquipmentReport(records){
 // Firebase keys cannot contain . # $ / [ ]  (product names such as "PU2WD (RH KJ2.9)" do) - swap in look-alike full-width characters
 function pfSanKey(k){ return String(k).replace(/\./g,'\u2024').replace(/#/g,'\uFF03').replace(/\$/g,'\uFF04').replace(/\//g,'\uFF0F').replace(/\[/g,'\uFF3B').replace(/\]/g,'\uFF3D'); }
 function pfSanObj(o){ const out = {}; Object.entries(o||{}).forEach(([k,v])=>{ const kk = pfSanKey(k); out[kk] = (out[kk]||0) + v; }); return out; }
-async function pfSaveSharedStatus(){
-  if(!db || !pfDayIndex) return false;
+function pfEncodeMonth(m){
   const flatIndex = [];
-  Object.entries(pfDayIndex).forEach(([day, byQrid])=>{
+  Object.entries(m.dayIndex).forEach(([day, byQrid])=>{
     Object.entries(byQrid).forEach(([qrid, data])=>{
       flatIndex.push({day: parseInt(day), qrid, qty: data.qty, products: pfSanObj(data.products)});
     });
   });
   const reportFlat = [];
-  Object.entries(pfEquipReport || {}).forEach(([qrid, byDay])=>{
+  Object.entries(m.report || {}).forEach(([qrid, byDay])=>{
     Object.entries(byDay).forEach(([day, shifts])=>{
       const row = {qrid, day: parseInt(day), day_: pfSanObj(shifts.day), night_: pfSanObj(shifts.night)};
       if(shifts.opd && shifts.opd.length) row.opd = shifts.opd;
@@ -841,48 +865,48 @@ async function pfSaveSharedStatus(){
       reportFlat.push(row);
     });
   });
-  await db.ref('productivityFile/current').set({
-    fileName: pfFileName,
-    refDate: pfRefDate.toISOString(),
-    uploadedAt: pfUploadedAt,
-    uploadedBy: pfUploadedBy,
-    flatIndex,
-    reportFlat,
-    seen: Array.from(pfSeen)
+  return {fileName:m.fileName, refDate:m.refDate.toISOString(), uploadedAt:m.uploadedAt, uploadedBy:m.uploadedBy, flatIndex, reportFlat, seen:m.seen||[]};
+}
+function pfDecodeMonth(data){
+  const idx = {};
+  (data.flatIndex||[]).forEach(({day, qrid, qty, products})=>{ idx[day] = idx[day] || {}; idx[day][qrid] = {qty, products: products||{}}; });
+  const report = {};
+  (data.seen||[]).forEach(q=>{ if(!report[q]) report[q] = {}; });
+  (data.reportFlat||[]).forEach(({qrid, day, day_, night_, opd, opn})=>{
+    report[qrid] = report[qrid] || {};
+    report[qrid][day] = {day: day_||{}, night: night_||{}, opd: opd||[], opn: opn||[]};
   });
+  const rd = new Date(data.refDate);
+  return {dayIndex: idx, report, seen:(data.seen||[]).slice(), refDate: new Date(rd.getFullYear(), rd.getMonth(), 1),
+          fileName:data.fileName||'', uploadedAt:data.uploadedAt||0, uploadedBy:data.uploadedBy||''};
+}
+async function pfSaveSharedStatus(keys){
+  if(!db) return false;
+  keys = (keys && keys.length) ? keys : pfMonthKeys();
+  if(!keys.length) return false;
+  for(const k of keys){
+    if(!pfMonths[k]) continue;
+    await db.ref('productivityFile/months/'+k).set(pfEncodeMonth(pfMonths[k]));
+  }
   return true;
 }
 async function pfLoadSharedStatus(){
   if(!db) return false;
   try{
-    const snap = await db.ref('productivityFile/current').once('value');
-    const data = snap.val();
-    if(!data || !data.flatIndex || !data.flatIndex.length) return false;
-    const idx = {};
-    data.flatIndex.forEach(({day, qrid, qty, products})=>{
-      idx[day] = idx[day] || {};
-      idx[day][qrid] = {qty, products};
-    });
-    pfDayIndex = idx;
-    const report = {};
-    (data.seen||[]).forEach(q=>{ if(!report[q]) report[q] = {}; });
-    (data.reportFlat||[]).forEach(({qrid, day, day_, night_, opd, opn})=>{
-      report[qrid] = report[qrid] || {};
-      report[qrid][day] = {day: day_||{}, night: night_||{}, opd: opd||[], opn: opn||[]};
-    });
-    pfEquipReport = report;
-    pfRefDate = new Date(data.refDate);
-    pfFileName = data.fileName || '';
-    pfUploadedBy = data.uploadedBy || '';
-    pfUploadedAt = data.uploadedAt || 0;
-    const today = new Date();
-    if(today.getFullYear()===pfRefDate.getFullYear() && today.getMonth()===pfRefDate.getMonth()){
-      pfSelectedDate = today;
-    } else {
-      const days = Object.keys(pfDayIndex).map(Number).sort((a,b)=>b-a);
-      pfSelectedDate = new Date(pfRefDate.getFullYear(), pfRefDate.getMonth(), days[0]||1);
+    const months = {};
+    const snapM = await db.ref('productivityFile/months').once('value');
+    const dm = snapM.val() || {};
+    Object.keys(dm).forEach(k=>{ if(dm[k] && dm[k].flatIndex && dm[k].flatIndex.length) months[k] = pfDecodeMonth(dm[k]); });
+    // legacy single-file storage (older app versions): keep it as its month unless a newer month entry exists
+    const snapL = await db.ref('productivityFile/current').once('value');
+    const dl = snapL.val();
+    if(dl && dl.flatIndex && dl.flatIndex.length){
+      const m = pfDecodeMonth(dl), k = pfMKey(m.refDate);
+      if(!months[k]) months[k] = m;
     }
-    pfActive = true;
+    if(!Object.keys(months).length) return false;
+    pfMonths = months;
+    pfPickDefaultDate();
     return true;
   }catch(err){
     console.error('shared status load failed', err);
@@ -891,7 +915,7 @@ async function pfLoadSharedStatus(){
 }
 function pfClear(){
   pfDayIndex = null; pfRefDate = null; pfSelectedDate = null; pfActive = false; pfFileName = '';
-  pfUploadedBy = ''; pfUploadedAt = 0; pfEquipReport = null;
+  pfUploadedBy = ''; pfUploadedAt = 0; pfEquipReport = null; pfMonths = {}; pfMonthKey = '';
 }
 function pfDateStr(d){
   const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), day=String(d.getDate()).padStart(2,'0');
@@ -912,21 +936,26 @@ function pfUploadedWhen(){
   return `${d.getMonth()+1}/${d.getDate()} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
 }
 function pfRenderBar(onChange){
-  const fileYear = pfRefDate ? pfRefDate.getFullYear() : null;
-  const fileMonth = pfRefDate ? pfRefDate.getMonth() : null;
-  const minDate = pfRefDate ? pfDateStr(new Date(fileYear, fileMonth, 1)) : '';
-  const maxDate = pfRefDate ? pfDateStr(new Date(fileYear, fileMonth+1, 0)) : '';
+  const mkeys = pfMonthKeys();
+  let minDate = '', maxDate = '';
+  if(mkeys.length){
+    const f = mkeys[0].split('-').map(Number), l = mkeys[mkeys.length-1].split('-').map(Number);
+    minDate = pfDateStr(new Date(f[0], f[1]-1, 1)); maxDate = pfDateStr(new Date(l[0], l[1], 0));
+  }
+  const monthChips = mkeys.length>1 ? mkeys.map(k=>`<button type="button" class="pf-mchip ${k===pfMonthKey?'on':''}" data-m="${k}">${parseInt(k.slice(5))}월</button>`).join('') : '';
+  const fileLabel = mkeys.length>1 ? `${mkeys.length}개월 연결 (${mkeys.map(k=>parseInt(k.slice(5))+'월').join('·')})` : pfFileName;
   return `
     <div class="toolbar" id="pfBar" style="background:#fff;border:1px solid #e3e1da;border-radius:10px;padding:10px 12px;flex-wrap:wrap;">
       <label class="mono" style="font-size:11px;color:#7c8493;">실적파일</label>
-      <label class="pf-upload-btn">📂 ${pfActive? '다른 파일 선택 (엑셀 업로드)' : '생산실적 엑셀 업로드'}<input type="file" id="pfFileInput" accept=".xlsx,.xls" style="display:none;"></label>
-      ${pfActive ? '<span class="pf-upload-hint">← 새 생산실적 엑셀을 올리려면 이 버튼을 누르세요</span>' : ''}
+      <label class="pf-upload-btn">📂 ${pfActive? '엑셀 업로드 · 추가 (여러 파일 선택 가능)' : '생산실적 엑셀 업로드'}<input type="file" id="pfFileInput" accept=".xlsx,.xls" multiple style="display:none;"></label>
+      ${pfActive ? '<span class="pf-upload-hint">← 월별 엑셀을 한꺼번에(Ctrl/Shift) 올리면 이어서 보입니다. 같은 달을 다시 올리면 그 달만 교체됩니다</span>' : ''}
       ${pfActive ? `
         <span style="font-size:11.5px;font-weight:700;color:#2e9d5b;background:#e7f6ed;border-radius:6px;padding:3px 8px;">✅ 반영 100%</span>
-        <span class="mono" style="font-size:11px;color:#7c8493;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${pfFileName}</span>
+        <span class="mono" style="font-size:11px;color:#7c8493;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${mkeys.map(k=>k+': '+(pfMonths[k]&&pfMonths[k].fileName)).join('\n')}">${fileLabel}</span>
+        ${monthChips ? '<span class="pf-mchips">'+monthChips+'</span>' : ''}
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
-        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18c (파일창 닫히면 즉시 팝업)</span>` : ''}
+        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18d (여러 달 이어보기·연속 추이 그래프)</span>` : ''}
       ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀(제품별 시트·설비별 시트 형식 모두 가능)을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다. 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
@@ -958,8 +987,8 @@ function pfWireBar(container, onChange){
     if(!e.target.files[0]) return;
     window.__pfBusy = true;
     { const o0=document.getElementById('pfProgOv'); if(o0) o0.onclick=null; }
-    const f = e.target.files[0];
-    pfProg(0,'파일 선택됨 — 준비 중…', f.name);   // popup first, instantly
+    const f = Array.from(e.target.files);
+    pfProg(0,'파일 선택됨 — 준비 중…', f.map(x=>x.name).join(', '));   // popup first, instantly
     fileInput.disabled = true;
     const ok = await pfHandleFile(f);
     if(ok){
@@ -971,17 +1000,29 @@ function pfWireBar(container, onChange){
     window.__pfBusy = false;
     const again = document.getElementById('pfFileInput'); if(again) again.disabled = false;
   };
+  container.querySelectorAll('.pf-mchip').forEach(btn=>{
+    btn.onclick = ()=>{
+      const k = btn.dataset.m; if(k===pfMonthKey) return;
+      const cur = pfSelectedDate ? pfSelectedDate.getDate() : 1;
+      pfUseMonth(k);
+      const dim = daysInMonth(pfRefDate);
+      const days = Object.keys(pfDayIndex).map(Number).sort((x,y)=>y-x);
+      pfSelectedDate = new Date(pfRefDate.getFullYear(), pfRefDate.getMonth(), pfDayIndex[cur] ? cur : (days[0]||Math.min(cur,dim)));
+      onChange();
+    };
+  });
   const datePick = container.querySelector('#pfDatePick');
   if(datePick) datePick.onchange = (e)=>{
     if(!e.target.value) return;
     const [y,m,d] = e.target.value.split('-').map(Number);
     const picked = new Date(y, m-1, d);
-    const fy = pfRefDate.getFullYear(), fm = pfRefDate.getMonth();
-    if(picked.getFullYear()!==fy || picked.getMonth()!==fm){
-      toast(`이 실적파일은 ${fy}년 ${fm+1}월 데이터만 있습니다. 그 달의 날짜를 선택해주세요.`);
+    const pk = pfMKey(picked);
+    if(!pfMonths[pk]){
+      toast(`${picked.getFullYear()}년 ${picked.getMonth()+1}월 실적파일은 올라와 있지 않습니다. 올라온 달: ${pfMonthKeys().map(k=>parseInt(k.slice(5))+'월').join(', ')}`);
       e.target.value = pfDateStr(pfSelectedDate);
       return;
     }
+    if(pk!==pfMonthKey) pfUseMonth(pk);
     pfSelectedDate = picked;
     onChange();
   };
@@ -1434,7 +1475,7 @@ async function renderLayoutMap(main){
           const qtyLine = (status==='run' || status==='live') && cs.qty ? ` · ${fmt(cs.qty)}개` : '';
           return `<div class="layout-marker ${status} ${stale?'stale':''} ${editMode?'editable':''}" style="left:${c.x}%;top:${c.y}%;" data-key="${e.qrid}" data-kind="builtin">
             <span class="marker-label">${shortLabel(dispLabel)}</span>
-            <div class="layout-tooltip">${dispLabel} · ${cs.product || label}${qtyLine}${pfOpsTip(cs)}${stale?' ⚠':''}${prodLine}</div>
+            <div class="layout-tooltip">${dispLabel} · ${cs.product || label}${qtyLine}${pfOpsTip(cs)}${pfIdleTip(e.qrid, cs)}${stale?' ⚠':''}${prodLine}</div>
           </div>`;
         }).join('')}
         ${customItems.map(e=>{
@@ -1802,8 +1843,107 @@ async function renderInputPage(key){
 
 // ---------- Equipment production report ----------
 let prodReportBuilding = null;
+let prodReportMode = 'table';  // 'table' (per month) | 'trend' (continuous)
 let prodReportSort = 'default';   // 'default' | 'rate' (lowest utilisation first)
-// Period = first day .. last day that has any production in the uploaded file
+
+// ---------- continuous (multi-month) series ----------
+function pfActiveOnEntry(m, qrid, day){
+  const x = m.report && m.report[qrid] && m.report[qrid][day];
+  const has = x && ((x.day && Object.keys(x.day).length) || (x.night && Object.keys(x.night).length));
+  const d = m.dayIndex && m.dayIndex[day] && m.dayIndex[day][qrid];
+  return !!(has || d);
+}
+// all calendar days from the first to the last day that has ANY production in the loaded files
+function pfAllDates(){
+  const keys = pfMonthKeys(); if(!keys.length) return [];
+  let lo = null, hi = null;
+  keys.forEach(k=>{
+    const m = pfMonths[k], y = m.refDate.getFullYear(), mo = m.refDate.getMonth();
+    Object.keys(m.dayIndex).forEach(d=>{
+      const dt = new Date(y, mo, parseInt(d));
+      if(!lo || dt<lo) lo = dt; if(!hi || dt>hi) hi = dt;
+    });
+  });
+  if(!lo) return [];
+  const out = [];
+  for(let t = new Date(lo); t <= hi; t = new Date(t.getFullYear(), t.getMonth(), t.getDate()+1)){
+    const k = pfMKey(t);
+    out.push({date:t, key:k, day:t.getDate(), has: !!pfMonths[k]});
+  }
+  return out;
+}
+// per-equipment continuous series + summary
+function pfTrend(qrid, dates){
+  dates = dates || pfAllDates();
+  const arr = dates.map(o=>{
+    if(!o.has) return {date:o.date, key:o.key, day:o.day, qty:null, active:false};
+    const m = pfMonths[o.key];
+    const d = m.dayIndex[o.day] && m.dayIndex[o.day][qrid];
+    return {date:o.date, key:o.key, day:o.day, qty: d? (d.qty||0) : 0, active: pfActiveOnEntry(m, qrid, o.day)};
+  });
+  const known = arr.filter(x=>x.qty!==null);
+  const active = known.filter(x=>x.active).length;
+  let streak = 0;
+  for(let i=arr.length-1;i>=0;i--){ if(arr[i].qty===null) continue; if(arr[i].active) break; streak++; }
+  let lastActive = null;
+  for(let i=arr.length-1;i>=0;i--){ if(arr[i].active){ lastActive = arr[i].date; break; } }
+  // utilisation BEFORE the current idle streak
+  let beforeTotal = 0, beforeAct = 0, seenStreak = 0;
+  for(let i=arr.length-1;i>=0;i--){
+    if(arr[i].qty===null) continue;
+    if(seenStreak<streak){ seenStreak++; continue; }
+    beforeTotal++; if(arr[i].active) beforeAct++;
+  }
+  return {arr, active, total:known.length, rate: known.length? active/known.length : 0, streak, lastActive, beforeTotal, beforeAct};
+}
+function pfMD(d){ return (d.getMonth()+1)+'/'+d.getDate(); }
+function pfTrendNote(t){
+  if(!t.total) return '';
+  if(t.streak===0) return `<span style="color:#3f9d5e;font-weight:700;">✅ 마지막 일자까지 가동 중</span>`;
+  if(!t.lastActive) return `<span style="color:#d5453a;font-weight:700;">⚠ 전체 기간 동안 실적 없음</span>`;
+  const beforeRate = t.beforeTotal ? Math.round(t.beforeAct/t.beforeTotal*100) : 0;
+  return `<span style="color:#d5453a;font-weight:700;">⚠ ${t.streak}일째 비가동</span> <span style="color:#7c8493;">(최근 가동 ${pfMD(t.lastActive)}${t.beforeTotal? ' · 그 전 '+t.beforeTotal+'일 중 '+t.beforeAct+'일 가동('+beforeRate+'%)':''})</span>`;
+}
+function pfIdleTip(qrid, cs){
+  if(!pfActive || !cs || cs.tier!=='pf' || cs.status!=='filestop' || pfMonthKeys().length<1) return '';
+  const t = pfTrend(qrid); if(!t.total) return '';
+  if(!t.lastActive) return ' · 전체기간 실적 없음';
+  const last = t.arr.filter(x=>x.qty!==null);
+  // how long idle counted up to the selected date
+  let n = 0; const sd = pfSelectedDate;
+  for(let i=last.length-1;i>=0;i--){ if(last[i].date>sd) continue; if(last[i].active) break; n++; }
+  const prev = [...last].reverse().find(x=>x.active && x.date<=sd);
+  return prev ? ` · 최근 가동 ${pfMD(prev.date)} (${n}일째 비가동)` : ' · 이날 이전 가동 기록 없음';
+}
+// SVG bar chart (viewBox units: 10 per day); bars = qty, red tick = idle, grey = file not loaded
+function pfTrendSvg(vals, opts){
+  opts = opts||{};
+  const n = vals.length, W = Math.max(n,1)*10, H = opts.h||44;
+  const max = Math.max(1, ...vals.filter(v=>v.qty!==null).map(v=>v.qty));
+  let g = '';
+  vals.forEach((v,i)=>{
+    const x = i*10+1;
+    if(v.qty===null){ g += `<rect x="${x}" y="${H-4}" width="8" height="4" fill="#d9d6cc"/>`; return; }
+    if(!v.active && !(opts.sum)){ g += `<rect x="${x}" y="${H-5}" width="8" height="5" fill="#e0675d"><title>${pfMD(v.date)} 비가동</title></rect>`; return; }
+    const h = v.qty>0 ? Math.max(3, v.qty/max*(H-6)) : (opts.sum? 3 : 3);
+    const col = (opts.sum && v.qty===0) ? '#e0675d' : (opts.color||'#4b8f6a');
+    g += `<rect x="${x}" y="${H-h}" width="8" height="${h}" fill="${col}"><title>${pfMD(v.date)} · ${fmt(v.qty)}개</title></rect>`;
+  });
+  // month boundaries + selected date marker
+  vals.forEach((v,i)=>{ if(i>0 && v.day===1) g += `<line x1="${i*10}" x2="${i*10}" y1="0" y2="${H}" stroke="#b9b4a6" stroke-dasharray="2 2" stroke-width="1" vector-effect="non-scaling-stroke"/>`; });
+  if(pfSelectedDate){
+    const si = vals.findIndex(v=>v.date.getTime()===new Date(pfSelectedDate.getFullYear(),pfSelectedDate.getMonth(),pfSelectedDate.getDate()).getTime());
+    if(si>=0) g += `<rect x="${si*10}" y="0" width="10" height="${H}" fill="#3b82f6" opacity=".16"/>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:${H}px;display:block;background:#faf9f6;border-radius:6px;">${g}</svg>`;
+}
+function pfTrendAxis(vals){
+  // one label per month, width proportional to the number of days
+  const segs = []; vals.forEach(v=>{ const l = segs[segs.length-1]; if(l && l.key===v.key) l.n++; else segs.push({key:v.key, n:1, first:v.date}); });
+  return `<div style="display:flex;font-size:10px;color:#9aa3ad;margin-top:2px;">${segs.map(sg=>`<div style="flex:${sg.n};border-left:1px solid #d9d6cc;padding-left:3px;white-space:nowrap;overflow:hidden;">${pfMD(sg.first)}~</div>`).join('')}</div>`;
+}
+
+// Period = first day .. last day that has any production in the uploaded file (current month)
 function pfPeriod(){
   let lo = 99, hi = 0;
   Object.values(pfEquipReport||{}).forEach(days=>{
@@ -1845,14 +1985,14 @@ async function renderProdReport(main){
     return;
   }
 
-  const qridsWithData = new Set(Object.keys(pfEquipReport));
+  const qridsWithData = new Set(); pfMonthKeys().forEach(k=>Object.keys(pfMonths[k].report).forEach(q=>qridsWithData.add(q)));
   const byBuilding = {};
   EQUIP.forEach(e=>{
     if(!qridsWithData.has(e.qrid)) return;
     (byBuilding[e.building] = byBuilding[e.building]||[]).push(e.qrid);
   });
   const known = new Set(EQUIP.map(e=>e.qrid).concat(Object.values(customEquipment||{}).map(c=>c.qrid)));
-  const extraQ = Object.keys(pfEquipReport).filter(q=>!known.has(q)).sort();
+  const extraQ = [...qridsWithData].filter(q=>!known.has(q)).sort();
   if(extraQ.length) byBuilding['기타'] = extraQ;
   const buildings = Object.keys(byBuilding).sort();
   if(!prodReportBuilding || !buildings.includes(prodReportBuilding)){
@@ -1862,6 +2002,7 @@ async function renderProdReport(main){
 
   const nDays = daysInMonth(pfRefDate);
   const per = pfPeriod();
+  if(prodReportMode==='trend'){ renderProdTrend(main, body, buildings, qridList); return; }
   const dateHeaders = Array.from({length:nDays}, (_,i)=>`<th>${pfRefDate.getMonth()+1}/${i+1}</th>`).join('');
 
   function shiftCells(data, key){
@@ -1899,7 +2040,8 @@ async function renderProdReport(main){
   body.innerHTML = `
     <div class="toolbar" style="margin-top:12px;">
       <div class="tabs">${buildings.map(b=>`<button class="${b===prodReportBuilding?'active':''}" data-b="${b}">${b}</button>`).join('')}</div>
-      <button class="btn ghost small" id="prodReportSortBtn" style="margin-left:auto;">${prodReportSort==='rate' ? '기본 순서로 보기' : '가동률 낮은 순으로 정렬'}</button>
+      <button class="btn small" id="prodReportModeBtn" style="margin-left:auto;background:#2b3340;color:#fff;">📈 월 이어서 보기 (연속 추이)</button>
+      <button class="btn ghost small" id="prodReportSortBtn">${prodReportSort==='rate' ? '기본 순서로 보기' : '가동률 낮은 순으로 정렬'}</button>
       <button class="btn ghost small" id="prodReportExportBtn">전체 설비 엑셀로 다운로드</button>
     </div>
     ${summaryHtml}
@@ -1915,7 +2057,52 @@ async function renderProdReport(main){
     btn.onclick = ()=>{ prodReportBuilding = btn.dataset.b; renderProdReport(main); };
   });
   document.getElementById('prodReportExportBtn').onclick = exportProdReportExcel;
+  document.getElementById('prodReportModeBtn').onclick = ()=>{ prodReportMode='trend'; prodReportSort='default'; renderProdReport(main); };
   document.getElementById('prodReportSortBtn').onclick = ()=>{ prodReportSort = prodReportSort==='rate' ? 'default' : 'rate'; renderProdReport(main); };
+}
+function renderProdTrend(main, body, buildings, qridList){
+  const dates = pfAllDates();
+  if(!dates.length){ body.innerHTML = '<div class="card" style="margin-top:16px;color:#7c8493;">표시할 실적이 없습니다.</div>'; return; }
+  const rows = qridList.map(q=>({q, t:pfTrend(q, dates)}));
+  if(prodReportSort==='idle') rows.sort((a,b)=> b.t.streak-a.t.streak || a.t.rate-b.t.rate || a.q.localeCompare(b.q));
+  else if(prodReportSort==='rate') rows.sort((a,b)=> a.t.rate-b.t.rate || a.q.localeCompare(b.q));
+  const idleNow = rows.filter(r=>r.t.streak>0).length;
+  // tab total per day
+  const total = dates.map((o,i)=>{
+    if(!o.has) return {date:o.date, key:o.key, day:o.day, qty:null, active:false};
+    let q = 0, run = 0; rows.forEach(r=>{ const x = r.t.arr[i]; q += x.qty||0; if(x.active) run++; });
+    return {date:o.date, key:o.key, day:o.day, qty:q, active:q>0, run};
+  });
+  const first = dates[0].date, last = dates[dates.length-1].date;
+  const missing = pfAllDates().filter(o=>!o.has).length;
+  body.innerHTML = `
+    <div class="toolbar" style="margin-top:12px;">
+      <div class="tabs">${buildings.map(b=>`<button class="${b===prodReportBuilding?'active':''}" data-b="${b}">${b}</button>`).join('')}</div>
+      <button class="btn small" id="prodReportModeBtn" style="margin-left:auto;background:#2b3340;color:#fff;">📅 월별 표로 보기</button>
+      <button class="btn ghost small" id="prodReportSortBtn">${prodReportSort==='idle' ? '기본 순서로 보기' : '현재 비가동 설비 먼저'}</button>
+      <button class="btn ghost small" id="prodReportExportBtn">전체 설비 엑셀로 다운로드</button>
+    </div>
+    <div class="pr-summary">📈 <b>연속 기간 ${pfMD(first)} ~ ${pfMD(last)} (${dates.length}일)</b> · ${pfMonthKeys().map(k=>parseInt(k.slice(5))+'월').join('·')} 파일 연결 · 이 탭 설비 <b>${rows.length}대</b> 중 마지막 일자에 <b style="color:${idleNow? '#d5453a':'#3f9d5e'}">${idleNow}대 비가동</b>${missing? ' · <span style="color:#c9772a;">'+missing+'일은 해당 월 파일이 없어 회색 표시</span>':''}</div>
+    <div class="card" style="margin-top:12px;padding:12px 14px;">
+      <div style="font-size:12px;font-weight:700;color:#4a5260;margin-bottom:6px;">${prodReportBuilding||''} 전체 일별 생산수량 합계</div>
+      ${pfTrendSvg(total,{h:70,sum:true,color:'#5b7fa6'})}${pfTrendAxis(total)}
+    </div>
+    <div class="card" style="margin-top:12px;padding:6px 14px;">
+      ${rows.map(({q,t})=>`
+      <div style="display:grid;grid-template-columns:minmax(150px,230px) 1fr;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid #f0eee8;">
+        <div>
+          <div style="font-weight:700;font-size:13px;">${effectiveLabel(q)}</div>
+          <div style="font-size:11.5px;color:#4a5260;">가동 ${t.active}/${t.total}일 · <span style="color:${pfRateColor(t.rate)};font-weight:700;">${(t.rate*100).toFixed(1)}%</span></div>
+          <div style="font-size:11.5px;line-height:1.5;">${pfTrendNote(t)}</div>
+        </div>
+        <div>${pfTrendSvg(t.arr,{h:40})}${pfTrendAxis(t.arr)}</div>
+      </div>`).join('')}
+    </div>
+    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">초록 막대 = 그날 생산수량(설비별 최대치 기준 높이) · <span style="color:#e0675d;">빨간 바닥선</span> = 실적 없는 날(비가동) · 회색 = 그 달 파일 미업로드 · 파란 띠 = 지금 선택한 날짜 · 점선 = 월 경계. 막대에 마우스를 올리면 날짜·수량이 보입니다.</p>`;
+  body.querySelectorAll('.tabs button').forEach(btn=>{ btn.onclick = ()=>{ prodReportBuilding = btn.dataset.b; renderProdReport(main); }; });
+  document.getElementById('prodReportModeBtn').onclick = ()=>{ prodReportMode='table'; prodReportSort='default'; renderProdReport(main); };
+  document.getElementById('prodReportSortBtn').onclick = ()=>{ prodReportSort = prodReportSort==='idle' ? 'default' : 'idle'; renderProdReport(main); };
+  document.getElementById('prodReportExportBtn').onclick = exportProdReportExcel;
 }
 async function exportProdReportExcel(){
   const nDays = daysInMonth(pfRefDate);
@@ -1981,12 +2168,32 @@ async function exportProdReportExcel(){
     ws2.views = [{state:'frozen', ySplit:1}];
   }
 
+  // third sheet: continuous daily quantity across all loaded months
+  const alld = pfAllDates();
+  if(alld.length && pfMonthKeys().length>1){
+    const ws3 = wb.addWorksheet('전체기간 일별수량');
+    ws3.columns = [{header:'설비고유번호', key:'q', width:24}, {header:'가동일/전체', key:'a', width:12}, {header:'가동률', key:'r', width:9}, {header:'현재 연속 비가동(일)', key:'s', width:14},
+      ...alld.map((o,i)=>({header:pfMD(o.date), key:'d'+i, width:9}))];
+    ws3.getRow(1).font = {bold:true}; ws3.getRow(1).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFF0EFEA'}};
+    Object.keys(pfMonths).forEach(()=>{});
+    const allQ = new Set(); pfMonthKeys().forEach(k=>Object.keys(pfMonths[k].report).forEach(q=>allQ.add(q)));
+    [...allQ].sort().forEach(q=>{
+      const t = pfTrend(q, alld);
+      const row = {q:effectiveLabel(q), a:`${t.active}/${t.total}`, r:t.rate, s:t.streak};
+      t.arr.forEach((x,i)=>{ row['d'+i] = x.qty===null ? '' : (x.active ? Math.round(x.qty) : '가동없음'); });
+      const r = ws3.addRow(row); r.getCell(3).numFmt = '0.0%';
+      t.arr.forEach((x,i)=>{ if(x.qty!==null && !x.active){ const c = r.getCell(5+i); c.fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFFBE5E3'}}; c.font = {color:{argb:'FFD5453A'}}; } });
+      if(t.streak>0) r.getCell(4).font = {color:{argb:'FFD5453A'}, bold:true};
+    });
+    ws3.views = [{state:'frozen', xSplit:4, ySplit:1}];
+  }
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `설비별_생산실적_${pfRefDate.getFullYear()}${String(pfRefDate.getMonth()+1).padStart(2,'0')}.xlsx`;
+  const mk = pfMonthKeys();
+  a.download = mk.length>1 ? `설비별_생산실적_${mk[0].replace('-','')}-${mk[mk.length-1].replace('-','')}.xlsx` : `설비별_생산실적_${pfRefDate.getFullYear()}${String(pfRefDate.getMonth()+1).padStart(2,'0')}.xlsx`;
   document.body.appendChild(a);
   a.click();
   a.remove();
