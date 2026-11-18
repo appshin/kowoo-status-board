@@ -955,7 +955,7 @@ function pfRenderBar(onChange){
         ${monthChips ? '<span class="pf-mchips">'+monthChips+'</span>' : ''}
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
-        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18d (여러 달 이어보기·연속 추이 그래프)</span>` : ''}
+        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18e (주간/야간 구분 그래프·품목별 총생산)</span>` : ''}
       ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀(제품별 시트·설비별 시트 형식 모두 가능)을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다. 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
@@ -1876,10 +1876,14 @@ function pfAllDates(){
 function pfTrend(qrid, dates){
   dates = dates || pfAllDates();
   const arr = dates.map(o=>{
-    if(!o.has) return {date:o.date, key:o.key, day:o.day, qty:null, active:false};
+    if(!o.has) return {date:o.date, key:o.key, day:o.day, qty:null, active:false, dq:null, nq:null, da:false, na:false};
     const m = pfMonths[o.key];
     const d = m.dayIndex[o.day] && m.dayIndex[o.day][qrid];
-    return {date:o.date, key:o.key, day:o.day, qty: d? (d.qty||0) : 0, active: pfActiveOnEntry(m, qrid, o.day)};
+    const x = (m.report && m.report[qrid] && m.report[qrid][o.day]) || {};
+    const sum = b=>Object.values(b||{}).reduce((a,c)=>a+(c||0),0);
+    const dq = sum(x.day), nq = sum(x.night);
+    return {date:o.date, key:o.key, day:o.day, qty: d? (d.qty||0) : 0, active: pfActiveOnEntry(m, qrid, o.day),
+            dq, nq, da: !!(x.day && Object.keys(x.day).length), na: !!(x.night && Object.keys(x.night).length)};
   });
   const known = arr.filter(x=>x.qty!==null);
   const active = known.filter(x=>x.active).length;
@@ -1894,7 +1898,42 @@ function pfTrend(qrid, dates){
     if(seenStreak<streak){ seenStreak++; continue; }
     beforeTotal++; if(arr[i].active) beforeAct++;
   }
-  return {arr, active, total:known.length, rate: known.length? active/known.length : 0, streak, lastActive, beforeTotal, beforeAct};
+  const dAct = known.filter(x=>x.da).length, nAct = known.filter(x=>x.na).length;
+  const dQty = known.reduce((a,x)=>a+(x.dq||0),0), nQty = known.reduce((a,x)=>a+(x.nq||0),0);
+  return {arr, active, total:known.length, rate: known.length? active/known.length : 0, streak, lastActive, beforeTotal, beforeAct,
+          dAct, nAct, dRate: known.length? dAct/known.length:0, nRate: known.length? nAct/known.length:0, dQty, nQty};
+}
+// product totals over ALL loaded months for one equipment: {product:{day,night}}
+function pfProductTotals(qrid){
+  const out = {};
+  pfMonthKeys().forEach(k=>{
+    const days = (pfMonths[k].report||{})[qrid] || {};
+    Object.values(days).forEach(x=>{
+      ['day','night'].forEach(sh=>{ Object.entries((x&&x[sh])||{}).forEach(([p,q])=>{ const o = out[p] = out[p]||{day:0,night:0}; o[sh]+=q; }); });
+    });
+  });
+  return out;
+}
+function pfShiftArr(arr, sh){
+  return arr.map(x=> x.qty===null ? {date:x.date,key:x.key,day:x.day,qty:null,active:false}
+    : {date:x.date,key:x.key,day:x.day, qty: sh==='day'?x.dq:x.nq, active: sh==='day'?x.da:x.na});
+}
+function pfShiftInsight(t){
+  if(!t.total) return '';
+  const diff = t.dRate - t.nRate;
+  if(diff >= 0.2) return `<span style="color:#2f6f9f;font-weight:700;">🌙 야간 가동 여력</span> <span style="color:#7c8493;">(야간 가동률이 주간보다 ${Math.round(diff*100)}%p 낮음 → 설비 CAPA 문제가 아니라 야간 투입 문제일 수 있음)</span>`;
+  if(-diff >= 0.2) return `<span style="color:#b9770e;font-weight:700;">☀ 주간 가동 여력</span> <span style="color:#7c8493;">(주간 가동률이 야간보다 ${Math.round(-diff*100)}%p 낮음)</span>`;
+  return '';
+}
+function pfProductChips(qrid){
+  const tot = pfProductTotals(qrid);
+  const list = Object.entries(tot).map(([p,o])=>({p, d:o.day, n:o.night, t:o.day+o.night})).sort((a,b)=>b.t-a.t);
+  if(!list.length) return '<span style="color:#9aa3ad;font-size:11.5px;">생산 품목 없음</span>';
+  const chip = x=>`<span title="주간 ${fmt(x.d)} / 야간 ${fmt(x.n)}" style="display:inline-block;background:#f1efe8;border-radius:12px;padding:2px 9px;margin:2px 4px 2px 0;font-size:11.5px;"><b>${x.p}</b> ${fmt(x.t)}개 <span style="color:#9aa3ad;">(주 ${fmt(x.d)} · 야 ${fmt(x.n)})</span></span>`;
+  const head = list.slice(0,4).map(chip).join('');
+  const rest = list.slice(4);
+  const sum = list.reduce((a,x)=>a+x.t,0);
+  return `<div style="font-size:11.5px;color:#4a5260;margin-bottom:2px;">기간 총 생산 <b>${fmt(sum)}개</b></div>${head}${rest.length? `<details style="display:inline;"><summary style="display:inline;cursor:pointer;font-size:11.5px;color:#2f6f9f;">외 ${rest.length}개 품목</summary><div>${rest.map(chip).join('')}</div></details>`:''}`;
 }
 function pfMD(d){ return (d.getMonth()+1)+'/'+d.getDate(); }
 function pfTrendNote(t){
@@ -1919,7 +1958,7 @@ function pfIdleTip(qrid, cs){
 function pfTrendSvg(vals, opts){
   opts = opts||{};
   const n = vals.length, W = Math.max(n,1)*10, H = opts.h||44;
-  const max = Math.max(1, ...vals.filter(v=>v.qty!==null).map(v=>v.qty));
+  const max = opts.max || Math.max(1, ...vals.filter(v=>v.qty!==null).map(v=>v.qty));
   let g = '';
   vals.forEach((v,i)=>{
     const x = i*10+1;
@@ -2067,12 +2106,18 @@ function renderProdTrend(main, body, buildings, qridList){
   if(prodReportSort==='idle') rows.sort((a,b)=> b.t.streak-a.t.streak || a.t.rate-b.t.rate || a.q.localeCompare(b.q));
   else if(prodReportSort==='rate') rows.sort((a,b)=> a.t.rate-b.t.rate || a.q.localeCompare(b.q));
   const idleNow = rows.filter(r=>r.t.streak>0).length;
-  // tab total per day
-  const total = dates.map((o,i)=>{
+  // tab total per day (day / night separately)
+  const mkTotal = sh=> dates.map((o,i)=>{
     if(!o.has) return {date:o.date, key:o.key, day:o.day, qty:null, active:false};
-    let q = 0, run = 0; rows.forEach(r=>{ const x = r.t.arr[i]; q += x.qty||0; if(x.active) run++; });
-    return {date:o.date, key:o.key, day:o.day, qty:q, active:q>0, run};
+    let q = 0; rows.forEach(r=>{ const x = r.t.arr[i]; q += (sh==='day'?x.dq:x.nq)||0; });
+    return {date:o.date, key:o.key, day:o.day, qty:q, active:q>0};
   });
+  const totD = mkTotal('day'), totN = mkTotal('night');
+  const totMax = Math.max(1, ...totD.filter(v=>v.qty!==null).map(v=>v.qty), ...totN.filter(v=>v.qty!==null).map(v=>v.qty));
+  const DAYC = '#e3a72f', NIGHTC = '#5a6cb0';
+  const shiftBlock = (lab, col, arr, rate, act, tot, qty, mx)=>`<div style="display:grid;grid-template-columns:78px 1fr;gap:8px;align-items:center;margin:3px 0;">
+      <div style="font-size:11px;line-height:1.3;"><b style="color:${col};">${lab}</b><br><span style="color:${pfRateColor(rate)};font-weight:700;">${(rate*100).toFixed(0)}%</span> <span style="color:#7c8493;">${act}/${tot}일</span></div>
+      <div>${pfTrendSvg(arr,{h:30,color:col,max:mx})}</div></div>`;
   const first = dates[0].date, last = dates[dates.length-1].date;
   const missing = pfAllDates().filter(o=>!o.has).length;
   body.innerHTML = `
@@ -2083,22 +2128,32 @@ function renderProdTrend(main, body, buildings, qridList){
       <button class="btn ghost small" id="prodReportExportBtn">전체 설비 엑셀로 다운로드</button>
     </div>
     <div class="pr-summary">📈 <b>연속 기간 ${pfMD(first)} ~ ${pfMD(last)} (${dates.length}일)</b> · ${pfMonthKeys().map(k=>parseInt(k.slice(5))+'월').join('·')} 파일 연결 · 이 탭 설비 <b>${rows.length}대</b> 중 마지막 일자에 <b style="color:${idleNow? '#d5453a':'#3f9d5e'}">${idleNow}대 비가동</b>${missing? ' · <span style="color:#c9772a;">'+missing+'일은 해당 월 파일이 없어 회색 표시</span>':''}</div>
-    <div class="card" style="margin-top:12px;padding:12px 14px;">
-      <div style="font-size:12px;font-weight:700;color:#4a5260;margin-bottom:6px;">${prodReportBuilding||''} 전체 일별 생산수량 합계</div>
-      ${pfTrendSvg(total,{h:70,sum:true,color:'#5b7fa6'})}${pfTrendAxis(total)}
+    <div class="card" style="margin-top:12px;padding:12px 14px;width:100%;max-width:none;box-sizing:border-box;">
+      <div style="font-size:12px;font-weight:700;color:#4a5260;margin-bottom:6px;">${prodReportBuilding||''} 전체 일별 생산수량 합계 (주간 / 야간)</div>
+      ${shiftBlock('☀ 주간',DAYC,totD,0,0,0,0,totMax).replace(/<div style="font-size:11px;line-height:1\.3;">[\s\S]*?<\/div>\n?/,'<div style="font-size:11px;"><b style="color:'+DAYC+';">☀ 주간</b><br><span style="color:#7c8493;">'+fmt(totD.reduce((a,x)=>a+(x.qty||0),0))+'개</span></div>')}
+      ${shiftBlock('🌙 야간',NIGHTC,totN,0,0,0,0,totMax).replace(/<div style="font-size:11px;line-height:1\.3;">[\s\S]*?<\/div>\n?/,'<div style="font-size:11px;"><b style="color:'+NIGHTC+';">🌙 야간</b><br><span style="color:#7c8493;">'+fmt(totN.reduce((a,x)=>a+(x.qty||0),0))+'개</span></div>')}
+      <div style="padding-left:86px;">${pfTrendAxis(totD)}</div>
     </div>
-    <div class="card" style="margin-top:12px;padding:6px 14px;">
-      ${rows.map(({q,t})=>`
-      <div style="display:grid;grid-template-columns:minmax(150px,230px) 1fr;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid #f0eee8;">
+    <div class="card" style="margin-top:12px;padding:6px 14px;width:100%;max-width:none;box-sizing:border-box;">
+      ${rows.map(({q,t})=>{
+        const mx = Math.max(1, ...t.arr.filter(x=>x.qty!==null).map(x=>Math.max(x.dq||0,x.nq||0)));
+        return `
+      <div style="display:grid;grid-template-columns:minmax(260px,380px) 1fr;gap:18px;align-items:start;padding:12px 0;border-bottom:1px solid #f0eee8;">
         <div>
-          <div style="font-weight:700;font-size:13px;">${effectiveLabel(q)}</div>
-          <div style="font-size:11.5px;color:#4a5260;">가동 ${t.active}/${t.total}일 · <span style="color:${pfRateColor(t.rate)};font-weight:700;">${(t.rate*100).toFixed(1)}%</span></div>
+          <div style="font-weight:700;font-size:14px;">${effectiveLabel(q)}</div>
+          <div style="font-size:11.5px;color:#4a5260;">가동 ${t.active}/${t.total}일 · <span style="color:${pfRateColor(t.rate)};font-weight:700;">${(t.rate*100).toFixed(1)}%</span> · 주간 ${fmt(t.dQty)}개 / 야간 ${fmt(t.nQty)}개</div>
           <div style="font-size:11.5px;line-height:1.5;">${pfTrendNote(t)}</div>
+          <div style="font-size:11.5px;line-height:1.5;margin:2px 0 4px;">${pfShiftInsight(t)}</div>
+          <div>${pfProductChips(q)}</div>
         </div>
-        <div>${pfTrendSvg(t.arr,{h:40})}${pfTrendAxis(t.arr)}</div>
-      </div>`).join('')}
+        <div>
+          ${shiftBlock('☀ 주간',DAYC,pfShiftArr(t.arr,'day'),t.dRate,t.dAct,t.total,0,mx)}
+          ${shiftBlock('🌙 야간',NIGHTC,pfShiftArr(t.arr,'night'),t.nRate,t.nAct,t.total,0,mx)}
+          <div style="padding-left:86px;">${pfTrendAxis(t.arr)}</div>
+        </div>
+      </div>`;}).join('')}
     </div>
-    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">초록 막대 = 그날 생산수량(설비별 최대치 기준 높이) · <span style="color:#e0675d;">빨간 바닥선</span> = 실적 없는 날(비가동) · 회색 = 그 달 파일 미업로드 · 파란 띠 = 지금 선택한 날짜 · 점선 = 월 경계. 막대에 마우스를 올리면 날짜·수량이 보입니다.</p>`;
+    <p style="font-size:11.5px;color:#9aa3ad;margin-top:10px;">주간(노랑)·야간(남색) 막대 = 그날 생산수량(한 설비의 주·야 중 최대치 기준 높이, 주야 비교 가능) · <span style="color:#e0675d;">빨간 바닥선</span> = 실적 없는 날(비가동) · 회색 = 그 달 파일 미업로드 · 파란 띠 = 지금 선택한 날짜 · 점선 = 월 경계. 막대에 마우스를 올리면 날짜·수량이 보입니다.</p>`;
   body.querySelectorAll('.tabs button').forEach(btn=>{ btn.onclick = ()=>{ prodReportBuilding = btn.dataset.b; renderProdReport(main); }; });
   document.getElementById('prodReportModeBtn').onclick = ()=>{ prodReportMode='table'; prodReportSort='default'; renderProdReport(main); };
   document.getElementById('prodReportSortBtn').onclick = ()=>{ prodReportSort = prodReportSort==='idle' ? 'default' : 'idle'; renderProdReport(main); };
@@ -2186,6 +2241,25 @@ async function exportProdReportExcel(){
       if(t.streak>0) r.getCell(4).font = {color:{argb:'FFD5453A'}, bold:true};
     });
     ws3.views = [{state:'frozen', xSplit:4, ySplit:1}];
+  }
+  // shift utilisation + product totals over all loaded months
+  if(alld.length){
+    const allQ2 = new Set(); pfMonthKeys().forEach(k=>Object.keys(pfMonths[k].report).forEach(q=>allQ2.add(q)));
+    const ws4 = wb.addWorksheet('설비별 주야 가동(전체기간)');
+    ws4.columns = [{header:'설비고유번호',width:24},{header:'전체 일수',width:10},{header:'주간 가동일',width:11},{header:'주간 가동률',width:11},{header:'야간 가동일',width:11},{header:'야간 가동률',width:11},{header:'주간 생산수량',width:13},{header:'야간 생산수량',width:13},{header:'판단',width:40}];
+    ws4.getRow(1).font = {bold:true}; ws4.getRow(1).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFF0EFEA'}};
+    const ws5 = wb.addWorksheet('설비별 품목 생산량(전체기간)');
+    ws5.columns = [{header:'설비고유번호',width:24},{header:'품목',width:30},{header:'주간 수량',width:12},{header:'야간 수량',width:12},{header:'합계',width:12}];
+    ws5.getRow(1).font = {bold:true}; ws5.getRow(1).fill = {type:'pattern', pattern:'solid', fgColor:{argb:'FFF0EFEA'}};
+    [...allQ2].sort().forEach(q=>{
+      const t = pfTrend(q, alld);
+      const dg = t.dRate - t.nRate;
+      const r = ws4.addRow([effectiveLabel(q), t.total, t.dAct, t.dRate, t.nAct, t.nRate, Math.round(t.dQty), Math.round(t.nQty), dg>=0.2?'야간 가동 여력(야간 가동률이 낮음)': (-dg>=0.2?'주간 가동 여력':'')]);
+      r.getCell(4).numFmt = '0.0%'; r.getCell(6).numFmt = '0.0%';
+      const tot = pfProductTotals(q);
+      Object.entries(tot).sort((a,b)=>(b[1].day+b[1].night)-(a[1].day+a[1].night)).forEach(([p,o])=>ws5.addRow([effectiveLabel(q), p, Math.round(o.day), Math.round(o.night), Math.round(o.day+o.night)]));
+    });
+    ws4.views = [{state:'frozen', ySplit:1}]; ws5.views = [{state:'frozen', ySplit:1}];
   }
   const buf = await wb.xlsx.writeBuffer();
   const blob = new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
