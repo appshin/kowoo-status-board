@@ -955,7 +955,7 @@ function pfRenderBar(onChange){
         ${monthChips ? '<span class="pf-mchips">'+monthChips+'</span>' : ''}
         <label class="mono" style="font-size:11px;color:#7c8493;">날짜</label>
         <input type="date" id="pfDatePick" value="${pfDateStr(pfSelectedDate)}" min="${minDate}" max="${maxDate}">
-        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18f (품목별 생산실적 탭)</span>` : ''}
+        ${pfUploadedAt ? `<span style="width:100%;font-size:11px;color:#9aa3ad;">${pfUploadedBy? pfUploadedBy+' · ':''}${pfUploadedWhen()}에 업로드됨 — 모든 기기에서 공유됩니다 · 앱 버전 2026-11-18g (보고서 엑셀·CAPA/유휴 분석)</span>` : ''}
       ` : `<span style="font-size:11.5px;color:#9aa3ad;">엑셀(제품별 시트·설비별 시트 형식 모두 가능)을 올리면 그 날짜의 실제 생산실적 기준으로 가동상태가 표시됩니다. 업로드하면 다른 기기에서도 이 실적이 보입니다.</span>`}
     </div>
   `;
@@ -2128,7 +2128,8 @@ function renderProdTrend(main, body, buildings, qridList){
       <div class="tabs">${buildings.map(b=>`<button class="${b===prodReportBuilding?'active':''}" data-b="${b}">${b}</button>`).join('')}</div>
       <button class="btn small" id="prodReportModeBtn" style="margin-left:auto;background:#2b3340;color:#fff;">📅 월별 표로 보기</button>
       <button class="btn ghost small" id="prodReportSortBtn">${prodReportSort==='idle' ? '기본 순서로 보기' : '현재 비가동 설비 먼저'}</button>
-      <button class="btn ghost small" id="prodReportExportBtn">전체 설비 엑셀로 다운로드</button>
+      <button class="btn small" id="trendXlBtn" style="background:#2e9d5b;color:#fff;">📥 보고서 엑셀 (이 화면 그대로 + CAPA 분석)</button>
+      <button class="btn ghost small" id="prodReportExportBtn">원자료 엑셀</button>
     </div>
     <div class="pr-summary">📈 <b>연속 기간 ${pfMD(first)} ~ ${pfMD(last)} (${dates.length}일)</b> · ${pfMonthKeys().map(k=>parseInt(k.slice(5))+'월').join('·')} 파일 연결 · 이 탭 설비 <b>${rows.length}대</b> 중 마지막 일자에 <b style="color:${idleNow? '#d5453a':'#3f9d5e'}">${idleNow}대 비가동</b>${missing? ' · <span style="color:#c9772a;">'+missing+'일은 해당 월 파일이 없어 회색 표시</span>':''}</div>
     <div class="card" style="margin-top:12px;padding:12px 14px;width:100%;max-width:none;box-sizing:border-box;">
@@ -2160,6 +2161,7 @@ function renderProdTrend(main, body, buildings, qridList){
   body.querySelectorAll('.tabs button').forEach(btn=>{ btn.onclick = ()=>{ prodReportBuilding = btn.dataset.b; renderProdReport(main); }; });
   document.getElementById('prodReportModeBtn').onclick = ()=>{ prodReportMode='table'; prodReportSort='default'; renderProdReport(main); };
   document.getElementById('prodReportSortBtn').onclick = ()=>{ prodReportSort = prodReportSort==='idle' ? 'default' : 'idle'; renderProdReport(main); };
+  document.getElementById('trendXlBtn').onclick = exportTrendReportExcel;
   document.getElementById('prodReportExportBtn').onclick = exportProdReportExcel;
 }
 async function exportProdReportExcel(){
@@ -2424,6 +2426,256 @@ async function exportItemReportExcel(summ, plist, dates, cur, rows, per){
   const buf = await wb.xlsx.writeBuffer();
   const url = URL.createObjectURL(new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
   const a = document.createElement('a'); a.href = url; a.download = `품목별_생산실적_${nm}.xlsx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+}
+
+
+// ================= 보고서 엑셀 (연속 추이 화면과 같은 구성) + CAPA/유휴 분석 =================
+const XL = {day:'FFE3A72F', night:'FF5A6CB0', idle:'FFE0675D', none:'FFD9D6CC', head:'FFF0EFEA', dark:'FF2B3340'};
+function xlFill(c){ return {type:'pattern', pattern:'solid', fgColor:{argb:c}}; }
+function pfFamily(q){ const e = EQUIP.find(x=>x.qrid===q); const id = (e && e.eqid) || q; return String(id).replace(/[-_ ]?\d.*$/,'') || String(id); }
+function pfTrendNoteText(t){
+  if(!t.total) return '';
+  if(t.streak===0) return '✅ 마지막 일자까지 가동 중';
+  if(!t.lastActive) return '⚠ 전체 기간 동안 실적 없음';
+  return `⚠ ${t.streak}일째 비가동 (최근 가동 ${pfMD(t.lastActive)}${t.beforeTotal? ' · 그 전 '+t.beforeTotal+'일 중 '+t.beforeAct+'일 가동('+Math.round(t.beforeAct/t.beforeTotal*100)+'%)':''})`;
+}
+function pfShiftInsightText(t){
+  if(!t.total) return '';
+  const diff = t.dRate - t.nRate;
+  if(diff >= 0.2) return `🌙 야간 가동 여력 (야간 가동률이 주간보다 ${Math.round(diff*100)}%p 낮음)`;
+  if(-diff >= 0.2) return `☀ 주간 가동 여력 (주간 가동률이 야간보다 ${Math.round(-diff*100)}%p 낮음)`;
+  return '';
+}
+// draw a bar chart with cells: rows top..top+h-1, bottom row = top+h-1, columns firstCol..
+function xlDrawBars(ws, top, h, firstCol, arr, mx, color, quiet){
+  arr.forEach((v,i)=>{
+    const col = firstCol+i, bot = top+h-1;
+    if(v.qty===null){ ws.getCell(bot,col).fill = xlFill(XL.none); return; }
+    const c0 = ws.getCell(bot,col);
+    c0.value = Math.round(v.qty||0); c0.numFmt = ';;;';
+    if(v.qty>0){
+      const L = Math.max(1, Math.round(v.qty/mx*h));
+      for(let k=0;k<L;k++) ws.getCell(bot-k,col).fill = xlFill(color);
+    } else if(!quiet){ c0.fill = xlFill(XL.idle); }
+  });
+}
+function xlHeaderRows(ws, dates, firstCol, rMonth, rDay){
+  let i = 0;
+  while(i<dates.length){
+    let j = i; while(j+1<dates.length && dates[j+1].key===dates[i].key) j++;
+    ws.mergeCells(rMonth, firstCol+i, rMonth, firstCol+j);
+    const c = ws.getCell(rMonth, firstCol+i); c.value = `${dates[i].date.getFullYear()}년 ${dates[i].date.getMonth()+1}월`;
+    c.font = {bold:true, size:9, color:{argb:'FFFFFFFF'}}; c.fill = xlFill(XL.dark); c.alignment = {horizontal:'center'};
+    i = j+1;
+  }
+  dates.forEach((o,k)=>{
+    const c = ws.getCell(rDay, firstCol+k); c.value = o.date.getDate();
+    c.font = {size:6, bold:o.day===1}; c.alignment = {horizontal:'center', vertical:'middle'}; c.fill = xlFill(XL.head);
+    if(o.day===1) c.border = {left:{style:'thin', color:{argb:'FF7C8493'}}};
+  });
+  ws.getRow(rDay).height = 13;
+}
+function xlBuildTrendReport(){
+  const wb = new ExcelJS.Workbook();
+  const dates = pfAllDates();
+  if(!dates.length) return null;
+  const FC = 3, LC = FC + dates.length - 1, H = 8, RH = 7.5;
+  const allQ = new Set(); pfMonthKeys().forEach(k=>Object.keys(pfMonths[k].report).forEach(q=>allQ.add(q)));
+  const order = q=>{ const i = EQUIP.findIndex(x=>x.qrid===q); return i<0 ? 9999 : i; };
+  const info = {};   // per-equipment analytics
+  [...allQ].forEach(q=>{ const t = pfTrend(q, dates); info[q] = {q, t, b:pfBuildingOf(q), fam:pfFamily(q), prod:pfProductTotals(q), label:effectiveLabel(q)}; });
+  const bOrder = ['F1','F2','F3'];
+  const byB = {}; Object.values(info).forEach(x=>(byB[x.b]=byB[x.b]||[]).push(x));
+  const bKeys = Object.keys(byB).sort((a,b)=>{ const ia=bOrder.indexOf(a), ib=bOrder.indexOf(b); return (ia<0?9:ia)-(ib<0?9:ib)||a.localeCompare(b); });
+  const first = dates[0].date, last = dates[dates.length-1].date;
+  const mlist = pfMonthKeys().map(k=>parseInt(k.slice(5))+'월').join('·');
+
+  // ---------- analytics ----------
+  const psum = pfProductSummary();
+  const prodRows = Object.values(psum).sort((a,b)=>b.total-a.total).map(o=>{
+    let wD=0, wN=0, wT=0, activeShifts=0;
+    const eqs = [...o.eq].map(q=>{
+      const x = info[q]; let tq = 0; Object.entries(x.prod).forEach(([p,v])=>{ if(pfSanKey(p)===o.key) tq += v.day+v.night; });
+      return {x, tq};
+    }).sort((a,b)=>b.tq-a.tq);
+    eqs.forEach(({x,tq})=>{ wD += x.t.dRate*tq; wN += x.t.nRate*tq; wT += tq; });
+    wD = wT? wD/wT : 0; wN = wT? wN/wT : 0;
+    const avg = (wD+wN)/2;
+    let verdict = avg>=0.85 ? '🔴 CAPA 빠듯 (생산 설비가 거의 쉬지 않음)' : (avg>=0.65 ? '🟡 여유 적음' : '🟢 여유 있음');
+    if(wD-wN>=0.2) verdict += ' / 야간 확대 여지';
+    else if(wN-wD>=0.2) verdict += ' / 주간 확대 여지';
+    const fams = new Set(eqs.map(e=>e.x.fam));
+    const cands = Object.values(info).filter(x=>!o.eq.has(x.q) && fams.has(x.fam) && x.t.total && x.t.rate<=0.6)
+      .sort((a,b)=>a.t.rate-b.t.rate).slice(0,5);
+    return {o, eqs, wD, wN, avg, verdict, cands};
+  });
+  const idleRows = Object.values(info).filter(x=>x.t.total && x.t.rate<=0.6).sort((a,b)=>a.t.rate-b.t.rate);
+  const tightProds = prodRows.filter(r=>r.avg>=0.85 && r.o.total>0);
+
+  // ---------- sheet 0: summary ----------
+  const w0 = wb.addWorksheet('① 요약·읽는 법');
+  w0.columns = [{width:3},{width:110}];
+  const L0 = [];
+  L0.push(['KOWOO THAI 설비 가동이력 · CAPA/유휴 분석 보고서', 'title']);
+  L0.push([`분석 기간: ${first.getFullYear()}.${pfMD(first)} ~ ${pfMD(last)} (${dates.length}일) · 연결된 실적 파일: ${mlist} · 작성일 ${pfDateStr(new Date())}`]);
+  L0.push(['']);
+  L0.push(['■ 한눈에 보기','h']);
+  L0.push([`· 실적이 있는 설비 ${Object.keys(info).length}대 중 기간 가동률 60% 이하(유휴 많음) ${idleRows.length}대, 마지막 일자에 비가동 ${Object.values(info).filter(x=>x.t.streak>0).length}대`]);
+  L0.push([`· 품목 ${prodRows.length}개 중 생산 설비 가동이 포화(가중 가동률 85% 이상)인 CAPA 빠듯 품목 ${tightProds.length}개`]);
+  tightProds.slice(0,8).forEach(r=>L0.push([`   - ${r.o.name}: 총 ${fmt(r.o.total)}개, 생산 설비 ${r.o.eq.size}대, 가중 가동률 주간 ${Math.round(r.wD*100)}% / 야간 ${Math.round(r.wN*100)}%${r.cands.length? ' → 전환 후보: '+r.cands.slice(0,3).map(c=>c.label+'('+Math.round(c.t.rate*100)+'%)').join(', '):''}`]));
+  L0.push(['']);
+  L0.push(['■ 시트 구성','h']);
+  L0.push(['· F1/F2/F3/기타 가동이력: 화면의 "월 이어서 보기"와 같은 구성 (설비별 주간☀/야간🌙 일별 막대, 가동률, 현재 비가동 일수, 품목별 총생산)']);
+  L0.push(['· ② 품목별 CAPA·유휴: 품목마다 생산 설비의 가동 포화도와, 같은 계열 설비 중 유휴가 많은 전환 후보 설비']);
+  L0.push(['· ③ 유휴 많은 설비: 가동률이 낮은 설비 목록과 투입 검토 품목']);
+  L0.push(['· ④ 설비 주야 가동현황 / ⑤ 일별 수량: 위 내용의 원자료(숫자)']);
+  L0.push(['']);
+  L0.push(['■ 판단 기준과 한계 (반드시 확인)','h']);
+  L0.push(['· 가동일 = 그날 주간 또는 야간에 생산 실적이 한 번이라도 있는 날. 가동률 = 가동일 ÷ 분석 기간 전체 일수(휴일 포함). 실적 파일에 없는 달은 계산에서 제외.']);
+  L0.push(['· 품목의 "가중 가동률" = 그 품목을 만든 설비들의 주간/야간 가동률을 설비별 생산량 비중으로 평균한 값. 85% 이상이면 CAPA 빠듯, 65~85% 여유 적음, 65% 미만 여유 있음 (참고용 기준).']);
+  L0.push(['· 전환 후보 설비 = 그 품목을 만들지 않은 설비 중, 설비번호 접두(예: KWI-CL, DH-CL, MHY)가 같은 "같은 계열"이면서 기간 가동률 60% 이하인 설비. 계열은 설비번호로 추정한 것이라 실제 가공 가능 여부는 아님.']);
+  L0.push(['· 치공구·프로그램·사이클타임·설비 사양(스핀들, 척, 행정 등)에 따른 가공 가능 여부와 품질(PPAP/고객 승인) 검토는 별도로 필요합니다. 이 자료는 검토 대상을 좁히기 위한 1차 선별입니다.']);
+  L0.forEach((r,i)=>{ const c = w0.getCell(i+1,2); c.value = r[0]; c.alignment = {wrapText:true, vertical:'top'};
+    if(r[1]==='title') c.font = {bold:true,size:16}; else if(r[1]==='h'){ c.font = {bold:true,size:12}; c.fill = xlFill(XL.head); } });
+
+  // ---------- building sheets (same layout as the screen) ----------
+  bKeys.forEach(b=>{
+    const list = byB[b].sort((x,y)=>order(x.q)-order(y.q) || x.label.localeCompare(y.label));
+    const ws = wb.addWorksheet(`${b} 가동이력`);
+    ws.getColumn(1).width = 54; ws.getColumn(2).width = 13;
+    for(let c=FC;c<=LC;c++) ws.getColumn(c).width = 2.3;
+    ws.mergeCells(1,1,1,Math.min(LC,40)); const t1 = ws.getCell(1,1);
+    t1.value = `${b} 설비별 가동 이력 (주간 ☀ / 야간 🌙) — ${pfMD(first)} ~ ${pfMD(last)} (${dates.length}일) · ${mlist} 실적`; t1.font = {bold:true,size:14};
+    ws.mergeCells(2,1,2,Math.min(LC,40)); const t2 = ws.getCell(2,1);
+    const idleN = list.filter(x=>x.t.streak>0).length;
+    t2.value = `설비 ${list.length}대 · 마지막 일자에 ${idleN}대 비가동 · 막대 높이 = 그날 생산수량(설비별로 주간·야간 중 최대치 기준) · 빨간 칸 = 그 교대 실적 없음 · 회색 = 해당 월 파일 없음`; t2.font = {size:9, color:{argb:'FF7C8493'}};
+    xlHeaderRows(ws, dates, FC, 4, 5);
+    ws.getCell(4,1).value = '설비 / 요약'; ws.getCell(4,1).font = {bold:true}; ws.getCell(4,1).fill = xlFill(XL.head);
+    ws.getCell(4,2).fill = xlFill(XL.head); ws.getCell(5,1).fill = xlFill(XL.head); ws.getCell(5,2).fill = xlFill(XL.head);
+    let r = 6;
+    const putShiftLabel = (rowTop, txt, color)=>{
+      ws.mergeCells(rowTop,2,rowTop+H-1,2); const c = ws.getCell(rowTop,2); c.value = txt;
+      c.font = {bold:true,size:9,color:{argb:color}}; c.alignment = {wrapText:true, vertical:'middle'};
+    };
+    // tab totals
+    const mkTot = sh=> dates.map((o,i)=>{
+      if(!o.has) return {qty:null};
+      let q = 0; list.forEach(x=>{ const a = x.t.arr[i]; q += (sh==='day'?a.dq:a.nq)||0; }); return {qty:q};
+    });
+    const tD = mkTot('day'), tN = mkTot('night');
+    const tMax = Math.max(1, ...tD.map(v=>v.qty||0), ...tN.map(v=>v.qty||0));
+    const sD = tD.reduce((a,v)=>a+(v.qty||0),0), sN = tN.reduce((a,v)=>a+(v.qty||0),0);
+    ws.mergeCells(r,1,r+2*H-1,1);
+    const ca = ws.getCell(r,1); ca.value = {richText:[{text:`${b} 전체 일별 생산수량 합계\n`,font:{bold:true,size:12}},{text:`☀ 주간 ${fmt(sD)}개\n🌙 야간 ${fmt(sN)}개`,font:{size:10}}]};
+    ca.alignment = {wrapText:true, vertical:'top'};
+    for(let k=0;k<2*H;k++) ws.getRow(r+k).height = RH+1.5;
+    putShiftLabel(r, '☀ 주간', XL.day); putShiftLabel(r+H, '🌙 야간', XL.night);
+    xlDrawBars(ws, r, H, FC, tD, tMax, XL.day, false); xlDrawBars(ws, r+H, H, FC, tN, tMax, XL.night, false);
+    r += 2*H;
+    ws.getRow(r).height = 6; r++;
+    list.forEach(x=>{
+      const t = x.t, top = r;
+      const mx = Math.max(1, ...t.arr.filter(a=>a.qty!==null).map(a=>Math.max(a.dq||0,a.nq||0)));
+      ws.mergeCells(top,1,top+2*H-1,1);
+      const prods = Object.entries(x.prod).map(([p,v])=>({p:pfUnsanKey(p), d:v.day, n:v.night, t:v.day+v.night})).sort((a,b)=>b.t-a.t);
+      const psumAll = prods.reduce((a,v)=>a+v.t,0);
+      const ptxt = prods.length ? `기간 총 생산 ${fmt(psumAll)}개\n`+prods.slice(0,6).map(v=>`· ${v.p} ${fmt(v.t)}개 (주 ${fmt(v.d)} · 야 ${fmt(v.n)})`).join('\n')+(prods.length>6? `\n· 외 ${prods.length-6}개 품목`:'') : '생산 품목 없음';
+      const ins = pfShiftInsightText(t);
+      const c = ws.getCell(top,1);
+      c.value = {richText:[
+        {text:x.label+'\n', font:{bold:true,size:12}},
+        {text:`가동 ${t.active}/${t.total}일 · ${(t.rate*100).toFixed(1)}% · 주간 ${fmt(t.dQty)}개 / 야간 ${fmt(t.nQty)}개\n`, font:{size:9}},
+        {text:pfTrendNoteText(t)+'\n', font:{size:9, bold:true, color:{argb: t.streak>0?'FFD5453A':'FF3F9D5E'}}},
+        ...(ins? [{text:ins+'\n', font:{size:9, bold:true, color:{argb:'FF2F6F9F'}}}] : []),
+        {text:ptxt, font:{size:8.5}}]};
+      c.alignment = {wrapText:true, vertical:'top'};
+      for(let k=0;k<2*H;k++) ws.getRow(top+k).height = RH+1.5;
+      putShiftLabel(top, `☀ 주간\n${Math.round(t.dRate*100)}% (${t.dAct}/${t.total}일)`, XL.day);
+      putShiftLabel(top+H, `🌙 야간\n${Math.round(t.nRate*100)}% (${t.nAct}/${t.total}일)`, XL.night);
+      xlDrawBars(ws, top, H, FC, pfShiftArr(t.arr,'day'), mx, XL.day, false);
+      xlDrawBars(ws, top+H, H, FC, pfShiftArr(t.arr,'night'), mx, XL.night, false);
+      for(let cc=1; cc<=LC; cc++) ws.getCell(top,cc).border = Object.assign({}, ws.getCell(top,cc).border||{}, {top:{style:'thin', color:{argb:'FFB9B4A6'}}});
+      r = top + 2*H; ws.getRow(r).height = 4; r++;
+    });
+    ws.views = [{state:'frozen', xSplit:2, ySplit:5}];
+    ws.pageSetup = {orientation:'landscape', fitToPage:true, fitToWidth:1, fitToHeight:0, paperSize:8};
+    ws.pageSetup.printTitlesRow = '4:5';
+  });
+
+  // ---------- sheet: 품목별 CAPA vs 유휴 ----------
+  const w2 = wb.addWorksheet('② 품목별 CAPA·유휴');
+  w2.columns = [{header:'순위',width:6},{header:'품목',width:26},{header:'총 생산',width:12},{header:'주간 수량',width:12},{header:'야간 수량',width:12},{header:'생산 설비 수',width:9},
+    {header:'생산 설비 (수량순, 주간/야간 가동률)',width:62},{header:'가중 가동률 주간',width:10},{header:'가중 가동률 야간',width:10},{header:'판단',width:34},
+    {header:'전환 후보 설비 (같은 계열·가동률 60% 이하, 낮은 순)',width:64},{header:'후보 설비 유휴 교대수 합계',width:12}];
+  w2.getRow(1).font = {bold:true}; w2.getRow(1).fill = xlFill(XL.head); w2.getRow(1).alignment = {wrapText:true, vertical:'middle'}; w2.getRow(1).height = 44;
+  prodRows.forEach((r,i)=>{
+    const eqTxt = r.eqs.slice(0,8).map(e=>`${e.x.label}(주${Math.round(e.x.t.dRate*100)}%/야${Math.round(e.x.t.nRate*100)}%·${fmt(e.tq)})`).join(', ') + (r.eqs.length>8? ` 외 ${r.eqs.length-8}대`:'');
+    const cTxt = r.cands.map(c=>`${c.label}[${c.b}] (가동률 ${Math.round(c.t.rate*100)}% · 주${Math.round(c.t.dRate*100)}/야${Math.round(c.t.nRate*100)}%)`).join('\n');
+    const idleShifts = r.cands.reduce((a,c)=>a+(c.t.total-c.t.dAct)+(c.t.total-c.t.nAct),0);
+    const row = w2.addRow([i+1, r.o.name, Math.round(r.o.total), Math.round(r.o.day), Math.round(r.o.night), r.o.eq.size, eqTxt, r.wD, r.wN, r.verdict, cTxt, idleShifts]);
+    row.getCell(8).numFmt = '0%'; row.getCell(9).numFmt = '0%';
+    [3,4,5,12].forEach(c=>row.getCell(c).numFmt = '#,##0');
+    [7,10,11].forEach(c=>row.getCell(c).alignment = {wrapText:true, vertical:'top'});
+    if(r.avg>=0.85){ row.getCell(10).fill = xlFill('FFFBE5E3'); row.getCell(10).font = {bold:true, color:{argb:'FFD5453A'}}; }
+    else if(r.avg<0.65){ row.getCell(10).fill = xlFill('FFE7F6ED'); }
+  });
+  w2.views = [{state:'frozen', ySplit:1, xSplit:2}];
+  w2.autoFilter = {from:{row:1,column:1}, to:{row:1,column:12}};
+
+  // ---------- sheet: 유휴 많은 설비 ----------
+  const w3 = wb.addWorksheet('③ 유휴 많은 설비');
+  w3.columns = [{header:'공장동',width:8},{header:'설비',width:24},{header:'계열',width:10},{header:'기간 가동률',width:10},{header:'주간 가동률',width:10},{header:'야간 가동률',width:10},
+    {header:'가동일/전체',width:11},{header:'유휴 교대수(주+야)',width:12},{header:'현재 연속 비가동(일)',width:12},{header:'이 기간 생산 품목 (수량)',width:50},{header:'투입 검토 품목 (같은 계열 설비가 만드는 CAPA 빠듯 품목, 생산량순)',width:60}];
+  w3.getRow(1).font = {bold:true}; w3.getRow(1).fill = xlFill(XL.head); w3.getRow(1).alignment = {wrapText:true, vertical:'middle'}; w3.getRow(1).height = 44;
+  idleRows.forEach(x=>{
+    const t = x.t;
+    const mine = Object.entries(x.prod).map(([p,v])=>({p:pfUnsanKey(p), t:v.day+v.night})).sort((a,b)=>b.t-a.t).slice(0,4).map(v=>`${v.p} ${fmt(v.t)}`).join(', ') || '없음';
+    const sug = tightProds.filter(r=>r.eqs.some(e=>e.x.fam===x.fam) && !(pfSanKey && Object.keys(x.prod).some(p=>pfSanKey(p)===r.o.key))).slice(0,4).map(r=>`${r.o.name}(${fmt(r.o.total)})`).join(', ') || '-';
+    const row = w3.addRow([x.b, x.label, x.fam, t.rate, t.dRate, t.nRate, `${t.active}/${t.total}`, (t.total-t.dAct)+(t.total-t.nAct), t.streak, mine, sug]);
+    [4,5,6].forEach(c=>row.getCell(c).numFmt = '0%');
+    [10,11].forEach(c=>row.getCell(c).alignment = {wrapText:true, vertical:'top'});
+    if(t.rate<0.3) row.getCell(4).font = {bold:true, color:{argb:'FFD5453A'}};
+  });
+  w3.views = [{state:'frozen', ySplit:1, xSplit:2}]; w3.autoFilter = {from:{row:1,column:1}, to:{row:1,column:11}};
+
+  // ---------- sheet: 설비 주야 가동현황 ----------
+  const w4 = wb.addWorksheet('④ 설비 주야 가동현황');
+  w4.columns = [{header:'공장동',width:8},{header:'설비',width:24},{header:'계열',width:10},{header:'전체 일수',width:9},{header:'가동일',width:8},{header:'가동률',width:9},{header:'주간 가동일',width:10},{header:'주간 가동률',width:10},{header:'야간 가동일',width:10},{header:'야간 가동률',width:10},{header:'주간 생산수량',width:13},{header:'야간 생산수량',width:13},{header:'현재 연속 비가동(일)',width:12},{header:'최근 가동일',width:11},{header:'판단',width:34}];
+  w4.getRow(1).font = {bold:true}; w4.getRow(1).fill = xlFill(XL.head); w4.getRow(1).alignment = {wrapText:true, vertical:'middle'}; w4.getRow(1).height = 32;
+  Object.values(info).sort((a,b)=>a.b.localeCompare(b.b) || order(a.q)-order(b.q)).forEach(x=>{
+    const t = x.t;
+    const row = w4.addRow([x.b, x.label, x.fam, t.total, t.active, t.rate, t.dAct, t.dRate, t.nAct, t.nRate, Math.round(t.dQty), Math.round(t.nQty), t.streak, t.lastActive? pfDateStr(t.lastActive):'', pfShiftInsightText(t) || (t.rate<=0.6?'유휴 많음':'')]);
+    [6,8,10].forEach(c=>row.getCell(c).numFmt = '0.0%'); [11,12].forEach(c=>row.getCell(c).numFmt = '#,##0');
+    if(t.streak>0) row.getCell(13).font = {bold:true, color:{argb:'FFD5453A'}};
+  });
+  w4.views = [{state:'frozen', ySplit:1, xSplit:2}]; w4.autoFilter = {from:{row:1,column:1}, to:{row:1,column:15}};
+
+  // ---------- sheet: 일별 수량 ----------
+  const w5 = wb.addWorksheet('⑤ 일별 수량');
+  w5.columns = [{header:'공장동',width:8},{header:'설비',width:24},{header:'구분',width:7}, ...dates.map(o=>({header:pfMD(o.date), width:8}))];
+  w5.getRow(1).font = {bold:true}; w5.getRow(1).fill = xlFill(XL.head);
+  Object.values(info).sort((a,b)=>a.b.localeCompare(b.b) || order(a.q)-order(b.q)).forEach(x=>{
+    ['day','night'].forEach(sh=>{
+      const row = w5.addRow([x.b, x.label, sh==='day'?'주간':'야간', ...x.t.arr.map(a=> a.qty===null ? '' : ((sh==='day'?a.da:a.na) ? Math.round(sh==='day'?a.dq:a.nq) : '가동없음'))]);
+      x.t.arr.forEach((a,i)=>{ if(a.qty!==null && !(sh==='day'?a.da:a.na)){ const c = row.getCell(4+i); c.fill = xlFill('FFFBE5E3'); c.font = {size:8, color:{argb:'FFD5453A'}}; } });
+    });
+  });
+  w5.views = [{state:'frozen', ySplit:1, xSplit:3}];
+  return wb;
+}
+async function exportTrendReportExcel(){
+  try{
+    toast('보고서 엑셀을 만드는 중입니다… (수 초 걸립니다)');
+    await new Promise(r=>setTimeout(r,50));
+    const wb = xlBuildTrendReport();
+    if(!wb){ toast('내보낼 실적이 없습니다.'); return; }
+    const buf = await wb.xlsx.writeBuffer();
+    const mk = pfMonthKeys();
+    const url = URL.createObjectURL(new Blob([buf], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+    const a = document.createElement('a'); a.href = url;
+    a.download = `KOWOO_THAI_설비가동이력_CAPA분석_${mk[0].replace('-','')}${mk.length>1?'-'+mk[mk.length-1].replace('-',''):''}.xlsx`;
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  }catch(err){ console.error(err); toast('엑셀 생성 중 오류가 발생했습니다.'); }
 }
 
 // ---------- QR management ----------
