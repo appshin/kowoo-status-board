@@ -139,6 +139,10 @@ button.btn.small{padding:6px 11px;font-size:12px;}
 .kp-f select{padding:7px;border:1px solid #d6d2c8;border-radius:6px;font-size:13px;}
 .kp-t th{line-height:1.3;}
 
+.kp-dl{all:unset;cursor:pointer;background:#2e9d5b;color:#fff;font-weight:700;font-size:12.5px;padding:8px 13px;border-radius:8px;white-space:nowrap;}
+.kp-dl:hover{filter:brightness(1.08);}
+.kp-legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:#4a5260;margin:2px 0 6px;}
+.kp-legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:5px;vertical-align:middle;}
 </style>
 </head>
 <body>
@@ -821,6 +825,57 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
   const pct = v => v==null ? '<span class="kp-muted">-</span>' : `<span style="color:${v<KP.S.underTargetRatio?'#d5453a':v>=1?'#2e9d5b':'#b26a00'};font-weight:700">${Math.round(v*100)}%</span>`;
   const srcTag = s => `<span class="kp-src ${/^한국/.test(s)?'k':/임시/.test(s)?'t':'n'}">${esc(s)}</span>`;
 
+
+  /* ---------- 그래프 (SVG) ---------- */
+  function kpPeriodChart(days, title){
+    // days: [{date, qty, target}] → 막대(실적·목표) + 누적 달성률 선
+    if(!days.length) return '';
+    const W = 1200, H = 230, L = 56, Rm = 50, T = 16, B = 34, iw = W-L-Rm, ih = H-T-B;
+    const mx = Math.max(1, ...days.map(d=>Math.max(d.qty, d.target)));
+    const bw = iw/days.length, y = v => T + ih - v/mx*ih;
+    let cq=0, ct=0; const cum = days.map(d=>{ cq+=d.qty; ct+=d.target; return ct ? cq/ct : null; });
+    const yr = v => T + ih - Math.min(v,1.5)/1.5*ih;
+    let s = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block">`;
+    [0,.5,1].forEach(f=>{ const yy=T+ih-f*ih; s+=`<line x1="${L}" x2="${W-Rm}" y1="${yy}" y2="${yy}" stroke="#ece9e1"/><text x="${L-6}" y="${yy+4}" font-size="11" text-anchor="end" fill="#8b93a1">${fmt(mx*f)}</text>`; });
+    [0.5,1,1.5].forEach(f=>{ const yy=yr(f); s+=`<text x="${W-Rm+6}" y="${yy+4}" font-size="11" fill="#8b93a1">${Math.round(f*100)}%</text>`; });
+    s += `<line x1="${L}" x2="${W-Rm}" y1="${yr(1)}" y2="${yr(1)}" stroke="#2e9d5b" stroke-dasharray="4 4" opacity=".6"/>`;
+    days.forEach((d,i)=>{
+      const x = L + i*bw, w = Math.max(2, bw*0.36), r = d.target ? d.qty/d.target : null;
+      const col = r==null ? '#b9b4a8' : r < KP.S.underTargetRatio ? '#d5453a' : r >= 1 ? '#2e9d5b' : '#e0a23a';
+      s += `<rect x="${x+bw*0.12}" y="${y(d.target)}" width="${w}" height="${T+ih-y(d.target)}" fill="#d9d6cc"><title>${d8(d.date)} 목표 ${fmt(d.target)}개</title></rect>`;
+      s += `<rect x="${x+bw*0.12+w}" y="${y(d.qty)}" width="${w}" height="${T+ih-y(d.qty)}" fill="${col}"><title>${d8(d.date)} 실적 ${fmt(d.qty)}개 · 일 달성률 ${r==null?'-':Math.round(r*100)+'%'}</title></rect>`;
+      if(days.length<=40 || i%2===0) s += `<text x="${x+bw/2}" y="${H-B+16}" font-size="10.5" text-anchor="middle" fill="#8b93a1">${d8(d.date)}</text>`;
+    });
+    const pts = cum.map((v,i)=>v==null?null:`${L+i*bw+bw/2},${yr(v)}`).filter(Boolean).join(' ');
+    s += `<polyline points="${pts}" fill="none" stroke="#2f6fed" stroke-width="2.2"/>`;
+    cum.forEach((v,i)=>{ if(v!=null) s+=`<circle cx="${L+i*bw+bw/2}" cy="${yr(v)}" r="2.6" fill="#2f6fed"><title>${d8(days[i].date)} 누적 달성률 ${Math.round(v*100)}%</title></circle>`; });
+    s += '</svg>';
+    const last = cum.filter(v=>v!=null).pop();
+    return `<div class="kp-card"><h2 class="kp-h">${esc(title)}</h2>
+      <div class="kp-legend"><span><i style="background:#d9d6cc"></i>일 목표 (개)</span><span><i style="background:#2e9d5b"></i>일 실적 (개, 목표 100% 이상)</span><span><i style="background:#e0a23a"></i>${Math.round(KP.S.underTargetRatio*100)}~100%</span><span><i style="background:#d5453a"></i>${Math.round(KP.S.underTargetRatio*100)}% 미만</span><span><i style="background:#2f6fed;height:3px"></i>누적 달성률 (%, 오른쪽 축) — 기간 끝 <b>${last==null?'-':Math.round(last*100)+'%'}</b></span></div>${s}</div>`;
+  }
+  function kpSpark(daily){
+    // 설비 행용 작은 일별 달성률 막대 (빨강=미달, 노랑=85~100%, 초록=100%+, 회색=생산 없음)
+    const n = daily.length; if(!n) return '';
+    const W = Math.max(60, n*5), H = 22, bw = W/n;
+    let s = `<svg width="${W}" height="${H}" style="vertical-align:middle">`;
+    daily.forEach((d,i)=>{ const r = d.target ? d.qty/d.target : null;
+      const hh = r==null ? 2 : Math.max(2, Math.min(r,1.3)/1.3*H);
+      const col = r==null ? '#e2dfd6' : r < KP.S.underTargetRatio ? '#d5453a' : r >= 1 ? '#2e9d5b' : '#e0a23a';
+      s += `<rect x="${i*bw+0.5}" y="${H-hh}" width="${Math.max(1,bw-1)}" height="${hh}" fill="${col}"><title>${d8(d.date)} ${r==null?'생산 없음':Math.round(r*100)+'%'}</title></rect>`; });
+    return s + '</svg>';
+  }
+  /* ---------- 엑셀 다운로드 ---------- */
+  function kpDownload(name, sheets){
+    const wb = XLSX.utils.book_new();
+    sheets.forEach(([sn, rowsA])=>{ const ws = XLSX.utils.aoa_to_sheet(rowsA);
+      ws['!cols'] = (rowsA[0]||[]).map((h,i)=>({wch: Math.min(40, Math.max(8, ...rowsA.slice(0,200).map(r=>String(r[i]==null?'':r[i]).length+2)))}));
+      XLSX.utils.book_append_sheet(wb, ws, sn.slice(0,31)); });
+    XLSX.writeFile(wb, name);
+  }
+  const r1 = v => v==null||!isFinite(v) ? '' : Math.round(v);
+  const p1 = v => v==null||!isFinite(v) ? '' : Math.round(v*1000)/10;
+
   function kpTarget(body, main){
     const R = KP.result, S = KP.S;
     if(!R.prod || !R.prod.length){ body.innerHTML = '<div class="kp-card kp-muted">생산실적(월별) 엑셀을 등록하세요.</div>'; return; }
@@ -830,26 +885,31 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
     const ms = C.machines.filter(m=>!KP.bldg || m.bldg===KP.bldg);
     const tot = ms.reduce((a,m)=>({q:a.q+m.qty, t:a.t+m.target}), {q:0,t:0});
     const nTemp = R.targets.filter(x=>!/^한국/.test(x.source)).length;
-    let h = `<div class="kp-card"><h2 class="kp-h">누적 관리 — 기간 누적 실적 vs 누적 목표 (설비별)</h2>
+    let h = `<!--KPCHART--><div class="kp-card"><h2 class="kp-h">누적 관리 — 기간 누적 실적 vs 누적 목표 (설비별)</h2>
       <div class="kp-sets" style="align-items:flex-end">
         <label class="kp-f">시작일<input type="date" id="kpFrom" value="${KP.from}" min="${P.ymd(minD)}" max="${P.ymd(maxD)}"></label>
         <label class="kp-f">종료일<input type="date" id="kpTo" value="${KP.to}" min="${P.ymd(minD)}" max="${P.ymd(maxD)}"></label>
         <label class="kp-f">동<select id="kpBldg"><option value="">전체</option>${['F1','F2','F3'].map(b=>`<option ${KP.bldg===b?'selected':''}>${b}</option>`).join('')}</select></label>
+        <button class="kp-dl" id="kpXls">⬇ 엑셀 다운로드 (설비별 누적·품목별·일자별·일일점검)</button>
         <div class="kp-muted" style="padding-bottom:6px">공장 가동일 <b>${C.days}일</b> · 설비 1대 가동가능시간 <b>${fmt(C.availH)}h</b> (= ${C.days}일 × ${S.shiftsPerDay}교대 × ${S.shiftHours}h) · 합계 실적 <b>${fmt(tot.q)}개</b> / 목표 <b>${fmt(tot.t)}개</b> (${tot.t?Math.round(tot.q/tot.t*100):'-'}%)</div>
       </div>
       <div class="kp-note">목표(개) = 기준 C/T로 계산한 시간당 목표(개/h) × 실적표에 적힌 작업시간(h). <b>기준 C/T는 한국 CAPA 조사표</b>(표준C/T = (설비C/T+로딩)÷설비효율)를 쓰고, 아직 연결되지 않은 품목·공정은 코우타이 실적표의 Net C/T÷효율을 <b>임시</b>로 씁니다 (현재 ${nTemp}건 임시 → 'CAPA 기준표' 탭에서 연결). 한 설비에서 여러 품목·공정을 한 경우 품목별 목표를 합산합니다. 설비 행을 누르면 품목별·일자별 누적이 펼쳐집니다.</div>
-      <div class="kp-tw"><table class="kp-t"><tr><th>동</th><th>설비</th><th class="n">생산한 품목·공정<br>(건)</th><th class="n">누적 실적<br>(개)</th><th class="n">누적 목표<br>(개, 기준C/T×작업시간)</th><th class="n">달성률<br>(%, 실적÷목표)</th><th class="n">작업시간<br>(h, 실적표)</th><th class="n">가동률<br>(%, 작업÷가동가능)</th><th class="n">가동가능시간 기준 CAPA<br>(개, 이 기간 이론상 최대)</th><th class="n">CAPA 대비 실적<br>(%)</th><th class="n">기준 없는 실적<br>(개)</th></tr>`;
+      <div class="kp-tw" style="max-height:none"><table class="kp-t"><tr><th>동</th><th>설비</th><th class="n">생산한 품목·공정<br>(건)</th><th class="n">누적 실적<br>(개)</th><th class="n">누적 목표<br>(개, 기준C/T×작업시간)</th><th class="n">달성률<br>(%, 실적÷목표)</th><th class="n">작업시간<br>(h, 실적표)</th><th class="n">가동률<br>(%, 작업÷가동가능)</th><th class="n">가동가능시간 기준 CAPA<br>(개, 이 기간 이론상 최대)</th><th class="n">CAPA 대비 실적<br>(%)</th><th class="n">기준 없는 실적<br>(개)</th><th>일별 달성률 추이<br><span class="kp-muted">빨강 미달·노랑·초록 100%+</span></th></tr>`;
     for(const m of ms){
       const op = KP.open[m.machine];
-      h += `<tr class="kp-click" data-m="${esc(m.machine)}"><td>${m.bldg}</td><td><b>${op?'▾':'▸'} ${esc(m.machine)}</b></td><td class="n">${m.products}</td><td class="n">${fmt(m.qty)}</td><td class="n">${fmt(m.target)}</td><td class="n">${pct(m.ratio)}</td><td class="n">${m.hours.toFixed(1)}</td><td class="n">${m.util!=null?Math.round(m.util*100)+'%':''}</td><td class="n">${fmt(m.capaAvail)}</td><td class="n">${pct(m.ratioAvail)}</td><td class="n kp-muted">${m.noStdQty?fmt(m.noStdQty):''}</td></tr>`;
+      h += `<tr class="kp-click" data-m="${esc(m.machine)}"><td>${m.bldg}</td><td><b>${op?'▾':'▸'} ${esc(m.machine)}</b></td><td class="n">${m.products}</td><td class="n">${fmt(m.qty)}</td><td class="n">${fmt(m.target)}</td><td class="n">${pct(m.ratio)}</td><td class="n">${m.hours.toFixed(1)}</td><td class="n">${m.util!=null?Math.round(m.util*100)+'%':''}</td><td class="n">${fmt(m.capaAvail)}</td><td class="n">${pct(m.ratioAvail)}</td><td class="n kp-muted">${m.noStdQty?fmt(m.noStdQty):''}</td><td>${kpSpark(m.daily)}</td></tr>`;
       if(op){
-        h += `<tr><td></td><td colspan="10" style="background:#faf9f6;white-space:normal"><div class="kp-grid2"><div><b class="kp-muted">품목·공정별 (이 기간)</b><table class="kp-t"><tr><th>품목</th><th>공정</th><th class="n">기준 C/T<br>(초/개)</th><th>기준 출처</th><th class="n">실적<br>(개)</th><th class="n">목표<br>(개)</th><th class="n">달성률<br>(%)</th><th class="n">작업시간<br>(h)</th></tr>` +
+        h += `<tr><td colspan="12" style="background:#faf9f6;white-space:normal"><div style="max-width:1150px">${kpPeriodChart(m.daily, m.machine+' — 일별 실적·목표와 누적 달성률')}</div><div class="kp-grid2"><div><b class="kp-muted">품목·공정별 (이 기간)</b><table class="kp-t"><tr><th>품목</th><th>공정</th><th class="n">기준 C/T<br>(초/개)</th><th>기준 출처</th><th class="n">실적<br>(개)</th><th class="n">목표<br>(개)</th><th class="n">달성률<br>(%)</th><th class="n">작업시간<br>(h)</th></tr>` +
           m.lines.map(L=>`<tr><td>${esc(L.item)}</td><td>${esc(L.process)}</td><td class="n">${L.stdCt?L.stdCt.toFixed(1):'-'}</td><td>${srcTag(L.source)}</td><td class="n">${fmt(L.qty)}</td><td class="n">${fmt(L.target)}</td><td class="n">${pct(L.ratio)}</td><td class="n">${L.hours.toFixed(1)}</td></tr>`).join('') +
           `</table></div><div><b class="kp-muted">일자별 (모든 품목 합산)</b><div class="kp-tw" style="max-height:300px"><table class="kp-t"><tr><th>일자</th><th class="n">일 실적<br>(개)</th><th class="n">일 목표<br>(개)</th><th class="n">일 달성률<br>(%)</th><th class="n">누적 실적<br>(개)</th><th class="n">누적 목표<br>(개)</th><th class="n">누적 달성률<br>(%)</th></tr>` +
           m.daily.map(d=>`<tr><td>${d8(d.date)}</td><td class="n">${fmt(d.qty)}</td><td class="n">${fmt(d.target)}</td><td class="n">${d.target?pct(d.qty/d.target):''}</td><td class="n">${fmt(d.cumQty)}</td><td class="n">${fmt(d.cumTarget)}</td><td class="n">${d.cumTarget?pct(d.cumQty/d.cumTarget):''}</td></tr>`).join('') + '</table></div></div></div></td></tr>';
       }
     }
     h += '</table></div></div>';
+    // 기간 그래프 (동 필터 적용 합계) — 표 위에 배치
+    const dayTot = {}; ms.forEach(m=>m.daily.forEach(d=>{ const k=+d.date; const x = dayTot[k] = dayTot[k] || {date:d.date, qty:0, target:0}; x.qty += d.qty; x.target += d.target; }));
+    const chart = kpPeriodChart(Object.values(dayTot).sort((a,b)=>a.date-b.date), `기간 일별 실적·목표 합계 ${KP.bldg||'전체 동'} (${KP.from} ~ ${KP.to})`);
+    h = h.replace('<!--KPCHART-->', chart);
 
     // 전일 점검
     const U = R.underTarget.filter(u=>(!KP.bldg || u.bldg===KP.bldg) && (!KP.underOnly || u.under));
@@ -865,6 +925,16 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
     body.querySelector('#kpBldg').onchange = e=>{ KP.bldg = e.target.value; re(); };
     body.querySelector('#kpUnder').onchange = e=>{ KP.underOnly = e.target.checked; re(); };
     body.querySelectorAll('tr.kp-click').forEach(tr=>tr.onclick = ()=>{ const m = tr.dataset.m; KP.open[m] = !KP.open[m]; re(); });
+    body.querySelector('#kpXls').onclick = ()=>{
+      const H1 = ['동','설비','생산한 품목·공정 (건)','누적 실적 (개)','누적 목표 (개, 기준C/T×작업시간)','달성률 (%)','작업시간 (h)','가동가능시간 (h)','가동률 (%)','가동가능시간 기준 CAPA (개)','CAPA 대비 실적 (%)','기준 없는 실적 (개)'];
+      const s1 = [H1, ...ms.map(m=>[m.bldg, m.machine, m.products, r1(m.qty), r1(m.target), p1(m.ratio), Math.round(m.hours*10)/10, r1(m.availH), p1(m.util), r1(m.capaAvail), p1(m.ratioAvail), r1(m.noStdQty)])];
+      const s2 = [['동','설비','품목','공정','기준 C/T (초/개)','기준 출처','실적 (개)','목표 (개)','달성률 (%)','작업시간 (h)'], ...[].concat(...ms.map(m=>m.lines.map(L=>[m.bldg, m.machine, L.item, L.process, L.stdCt?Math.round(L.stdCt*10)/10:'', L.source, r1(L.qty), r1(L.target), p1(L.ratio), Math.round(L.hours*10)/10])))];
+      const s3 = [['동','설비','일자','일 실적 (개)','일 목표 (개)','일 달성률 (%)','누적 실적 (개)','누적 목표 (개)','누적 달성률 (%)'], ...[].concat(...ms.map(m=>m.daily.map(d=>[m.bldg, m.machine, P.ymd(d.date), r1(d.qty), r1(d.target), d.target?p1(d.qty/d.target):'', r1(d.cumQty), r1(d.cumTarget), d.cumTarget?p1(d.cumQty/d.cumTarget):''])))];
+      const tot = Object.values(dayTot).sort((a,b)=>a.date-b.date); let cq=0, ct=0;
+      const s4 = [['일자','일 실적 합계 (개)','일 목표 합계 (개)','일 달성률 (%)','누적 실적 (개)','누적 목표 (개)','누적 달성률 (%)'], ...tot.map(d=>{ cq+=d.qty; ct+=d.target; return [P.ymd(d.date), r1(d.qty), r1(d.target), d.target?p1(d.qty/d.target):'', r1(cq), r1(ct), ct?p1(cq/ct):'']; })];
+      const s5 = [['일자','동','설비','교대','작업자','품목','공정','작업시간 (h)','실적 (개)','목표 (개)','달성률 (%)','기준 출처'], ...[].concat(...R.underTarget.filter(u=>!KP.bldg||u.bldg===KP.bldg).map(u=>u.lines.map(l=>[P.ymd(u.date), u.bldg, u.machine, u.shift, l.operator, l.item, l.process, l.hours, r1(l.qty), r1(l.target), p1(l.ratio), l.source])))];
+      kpDownload(`KOWOO_목표대비실적_${KP.from}_${KP.to}${KP.bldg?'_'+KP.bldg:''}.xlsx`, [['설비별 누적', s1], ['품목·공정별', s2], ['설비 일자별 누적', s3], ['일자별 합계', s4], ['일일점검 '+d8(R.lastProdDate).replace('/','-'), s5]]);
+    };
   }
 
 
@@ -880,17 +950,18 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
       <div class="kp-sets" style="align-items:flex-end">
         <label class="kp-f">시작일<input type="date" id="kpFrom" value="${KP.from}" min="${P.ymd(minD)}" max="${P.ymd(maxD)}"></label>
         <label class="kp-f">종료일<input type="date" id="kpTo" value="${KP.to}" min="${P.ymd(minD)}" max="${P.ymd(maxD)}"></label>
+        <button class="kp-dl" id="kpXls">⬇ 엑셀 다운로드 (작업자 누적·일자별·동일 C/T 비교)</button>
         <label class="kp-f">동 (주 근무동)<select id="kpBldg"><option value="">전체</option>${['F1','F2','F3'].map(b=>`<option ${KP.bldg===b?'selected':''}>${b}</option>`).join('')}</select></label>
       </div>
       <div class="kp-note">설비·품목마다 속도가 달라 개수만으로는 비교가 안 되므로, 각 교대 실적을 <b>그 공정의 기준 C/T로 계산한 목표</b>(= 기준 C/T 시간당 목표 × 작업시간)로 나눈 <b>달성률</b>로 비교합니다. 100% = 기준 속도대로 일함.
       '전체 중앙값 대비'가 ${Math.round(S.lowOpRatio*100)}% 미만이면 '확인 필요', ${Math.round(S.highOpRatio*100)}% 초과면 '우수' (작업시간 ${S.minOpHours}h 미만은 표본부족).
       <b>판정 전 현장 확인:</b> 설비 고장·자재 대기·작업시간 기재 습관도 달성률에 영향을 줍니다. 기준이 '임시(코우타이 C/T)'인 공정은 CAPA 기준표에서 한국 CAPA로 연결하면 더 정확해집니다. 2인 공동 기재(A+B)와 숫자만 적힌 작업자 칸은 제외했습니다.</div>
       <div class="kp-muted">기간 중앙값 달성률 <b>${Math.round(O.median*100)}%</b> · 비교 대상 ${ops.length}명 · 마지막 실적일 ${d8(O.last)} · 이름을 누르면 일자별 추이가 펼쳐집니다.</div>
-      <div class="kp-tw" style="max-height:560px"><table class="kp-t"><tr><th>판정</th><th>작업자</th><th>주 근무동</th><th class="n">근무 교대<br>(회)</th><th class="n">작업시간<br>(h)</th><th class="n">누적 실적<br>(개)</th><th class="n">누적 목표<br>(개, 기준C/T×작업시간)</th><th class="n">누적 달성률<br>(%)</th><th class="n">전체 중앙값 대비<br>(%)</th><th class="n">${d8(O.last)} 일일 달성률<br>(%)</th><th>주로 일한 설비</th></tr>`;
+      <div class="kp-tw" style="max-height:560px"><table class="kp-t"><tr><th>판정</th><th>작업자</th><th>주 근무동</th><th class="n">근무 교대<br>(회)</th><th class="n">작업시간<br>(h)</th><th class="n">누적 실적<br>(개)</th><th class="n">누적 목표<br>(개, 기준C/T×작업시간)</th><th class="n">누적 달성률<br>(%)</th><th class="n">전체 중앙값 대비<br>(%)</th><th class="n">${d8(O.last)} 일일 달성률<br>(%)</th><th>일별 달성률 추이</th><th>주로 일한 설비</th></tr>`;
     for(const o of ops){
       const op = KP.opOpen[o.operator];
-      h += `<tr class="kp-click" data-o="${esc(o.operator)}"><td>${flagTag(o.flag)}</td><td><b>${op?'▾':'▸'} ${esc(o.operator)}</b></td><td>${o.bldg}</td><td class="n">${o.shifts}</td><td class="n">${o.hours.toFixed(1)}</td><td class="n">${fmt(o.qty)}</td><td class="n">${fmt(o.target)}</td><td class="n">${pct(o.ratio)}</td><td class="n">${Math.round(o.vsMed*100)}%</td><td class="n">${o.lastRatio!=null?pct(o.lastRatio):'<span class="kp-muted">근무 없음</span>'}</td><td class="kp-nm kp-muted">${esc(o.machines.slice(0,4).join(', '))}</td></tr>`;
-      if(op) h += `<tr><td></td><td colspan="10" style="background:#faf9f6"><table class="kp-t" style="width:auto"><tr><th>일자</th><th class="n">일 실적<br>(개)</th><th class="n">일 목표<br>(개)</th><th class="n">일 달성률<br>(%)</th><th class="n">누적 달성률<br>(%)</th></tr>${o.daily.map(d=>`<tr><td>${d8(d.date)}</td><td class="n">${fmt(d.qty)}</td><td class="n">${fmt(d.target)}</td><td class="n">${pct(d.ratio)}</td><td class="n">${pct(d.cumRatio)}</td></tr>`).join('')}</table></td></tr>`;
+      h += `<tr class="kp-click" data-o="${esc(o.operator)}"><td>${flagTag(o.flag)}</td><td><b>${op?'▾':'▸'} ${esc(o.operator)}</b></td><td>${o.bldg}</td><td class="n">${o.shifts}</td><td class="n">${o.hours.toFixed(1)}</td><td class="n">${fmt(o.qty)}</td><td class="n">${fmt(o.target)}</td><td class="n">${pct(o.ratio)}</td><td class="n">${Math.round(o.vsMed*100)}%</td><td class="n">${o.lastRatio!=null?pct(o.lastRatio):'<span class="kp-muted">근무 없음</span>'}</td><td>${kpSpark(o.daily)}</td><td class="kp-nm kp-muted">${esc(o.machines.slice(0,4).join(', '))}</td></tr>`;
+      if(op) h += `<tr><td colspan="12" style="background:#faf9f6;white-space:normal"><div style="max-width:1150px">${kpPeriodChart(o.daily, o.operator+' — 일별 실적·목표와 누적 달성률')}</div><table class="kp-t" style="width:auto"><tr><th>일자</th><th class="n">일 실적<br>(개)</th><th class="n">일 목표<br>(개)</th><th class="n">일 달성률<br>(%)</th><th class="n">누적 달성률<br>(%)</th></tr>${o.daily.map(d=>`<tr><td>${d8(d.date)}</td><td class="n">${fmt(d.qty)}</td><td class="n">${fmt(d.target)}</td><td class="n">${pct(d.ratio)}</td><td class="n">${pct(d.cumRatio)}</td></tr>`).join('')}</table></td></tr>`;
     }
     h += '</table></div></div>';
     h += `<div class="kp-card"><h2 class="kp-h">같은 기준 C/T 공정끼리 작업자 비교 (설비는 달라도 C/T가 같으면 같은 조건)</h2>
@@ -909,6 +980,12 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
     body.querySelector('#kpBldg').onchange = e=>{ KP.bldg = e.target.value; re(); };
     body.querySelectorAll('tr.kp-click[data-o]').forEach(tr=>tr.onclick = ()=>{ const o = tr.dataset.o; KP.opOpen[o] = !KP.opOpen[o]; re(); });
     body.querySelectorAll('div.kp-click[data-ct]').forEach(d=>d.onclick = ()=>{ const k = d.dataset.ct; KP.ctOpen[k] = !KP.ctOpen[k]; re(); });
+    body.querySelector('#kpXls').onclick = ()=>{
+      const s1 = [['판정','작업자','주 근무동','근무 교대 (회)','작업시간 (h)','누적 실적 (개)','누적 목표 (개, 기준C/T×작업시간)','누적 달성률 (%)','전체 중앙값 대비 (%)', d8(O.last)+' 일일 달성률 (%)','주로 일한 설비'], ...ops.map(o=>[o.flag, o.operator, o.bldg, o.shifts, Math.round(o.hours*10)/10, r1(o.qty), r1(o.target), p1(o.ratio), p1(o.vsMed), p1(o.lastRatio), o.machines.slice(0,6).join(', ')])];
+      const s2 = [['작업자','일자','일 실적 (개)','일 목표 (개)','일 달성률 (%)','누적 달성률 (%)'], ...[].concat(...ops.map(o=>o.daily.map(d=>[o.operator, P.ymd(d.date), r1(d.qty), r1(d.target), p1(d.ratio), p1(d.cumRatio)])))];
+      const s3 = [['기준 C/T (초/개)','기준 출처','작업자','근무 교대 (회)','작업시간 (h)','실적 (개)','교대당 평균 (개/교대)','시간당 (개/h)','달성률 (%)','그룹 중앙값 대비 (%)','그룹에 포함된 설비·품목·공정'], ...[].concat(...O.ctGroups.map(g=>g.ops.map(o=>[g.stdCt, g.source, o.operator, o.shifts, Math.round(o.hours*10)/10, r1(o.qty), r1(o.perShift), Math.round(o.perHour*10)/10, p1(o.ratio), p1(o.vsMed), g.procs.join(' / ')])))];
+      kpDownload(`KOWOO_작업자비교_${KP.from}_${KP.to}${KP.bldg?'_'+KP.bldg:''}.xlsx`, [['작업자 누적', s1], ['작업자 일자별', s2], ['동일 CT 비교', s3]]);
+    };
   }
 
   function kpStd(body, main){
@@ -922,10 +999,15 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
       return `<option value="">— 한국 CAPA 공정 선택 —</option>` + scored.map(({r,s})=>`<option value="${esc(r.id)}" ${t.rowId===r.id && /지정/.test(t.source)?'selected':''}>${s?'★ ':''}[${r.fileDate}] ${esc(r.line)} · ${esc(r.no)} ${esc(r.process)} · 표준 ${r.stdCt.toFixed(1)}초</option>`).join(''); };
     let h = `<div class="kp-card"><h2 class="kp-h">CAPA 기준표 — 설비·품목·공정별 기준 C/T와 1교대 목표수량</h2>
       <div class="kp-note">목표의 기준은 <b>한국 CAPA 조사표</b>입니다. 조사표를 '자료 등록'에서 올리면 설비번호가 같은 곳(예: NA5 KWI-CL-100)과 라인·공정번호가 같은 곳은 자동 연결됩니다. 나머지는 오른쪽 칸에서 해당 CAPA 공정을 골라 주세요(★ = 품목명이 조사표 라인·차종과 일치). 고른 내용은 모든 사용자에게 공유되고, 일일·누적 목표가 즉시 다시 계산됩니다.<br>
-      현재: ${Object.entries(cnt).map(([k,v])=>`${srcTag(k)} ${v}건`).join(' · ')} · 한국 CAPA 조사표 ${Object.keys(KP.data.capa).length}개 등록</div>
+      <button class="kp-dl" id="kpXls" style="float:right">⬇ 엑셀 다운로드 (현장 배포용 1교대 목표표)</button>현재: ${Object.entries(cnt).map(([k,v])=>`${srcTag(k)} ${v}건`).join(' · ')} · 한국 CAPA 조사표 ${Object.keys(KP.data.capa).length}개 등록</div>
       <div class="kp-tw" style="max-height:640px"><table class="kp-t"><tr><th>동</th><th>설비</th><th>품목</th><th>공정</th><th class="n">기준 C/T<br>(초/개)</th><th>기준 출처</th><th class="n">시간당 목표<br>(개/h)</th><th class="n">1교대 목표<br>(개/${S.shiftHours}h)</th><th class="n">실적 평균 속도<br>(개/h)</th><th class="n">실적 ÷ 목표<br>(%)</th><th class="n">코우타이 파일 기준<br>1교대 CAPA (개)</th><th>한국 CAPA 연결 (선택)</th></tr>` +
       R.targets.map(t=>`<tr><td>${t.bldg}</td><td>${esc(t.machine)}</td><td>${esc(t.item)}</td><td>${esc(t.process)}</td><td class="n">${t.stdCt?t.stdCt.toFixed(1):'-'}</td><td>${srcTag(t.source)}<div class="kp-muted" style="max-width:260px;white-space:normal">${esc(t.ref)}</div></td><td class="n">${t.targetRate?t.targetRate.toFixed(1):'-'}</td><td class="n"><b>${fmt(t.targetShift)}</b></td><td class="n">${t.actRate?t.actRate.toFixed(1):'-'}</td><td class="n">${t.actRate&&t.targetRate?pct(t.actRate/t.targetRate):''}</td><td class="n kp-muted">${fmt(t.thaiShiftCapa)}</td><td><select class="kp-map" data-k="${esc(t.key)}" style="max-width:320px">${opts(t)}</select></td></tr>`).join('') + '</table></div></div>';
     body.innerHTML = h;
+    body.querySelector('#kpXls').onclick = ()=>{
+      const s1 = [['동','설비','품목','공정','기준 C/T (초/개)','기준 출처','근거','시간당 목표 (개/h)',`1교대 목표 (개/${S.shiftHours}h)`,`1일 목표 (개/${S.shiftsPerDay}교대)`,'실적 평균 속도 (개/h)','실적÷목표 (%)','코우타이 파일 기준 1교대 CAPA (개)'],
+        ...R.targets.map(t=>[t.bldg, t.machine, t.item, t.process, t.stdCt?Math.round(t.stdCt*10)/10:'', t.source, t.ref, t.targetRate?Math.round(t.targetRate*10)/10:'', r1(t.targetShift), t.targetShift?r1(t.targetShift*S.shiftsPerDay):'', t.actRate?Math.round(t.actRate*10)/10:'', t.actRate&&t.targetRate?p1(t.actRate/t.targetRate):'', r1(t.thaiShiftCapa)])];
+      kpDownload(`KOWOO_CAPA기준_목표수량표_${P.ymd(new Date())}.xlsx`, [['1교대 목표수량', s1]]);
+    };
     body.querySelectorAll('select.kp-map').forEach(sel=>sel.onchange = async ()=>{
       const k = sel.dataset.k; if(sel.value) KP.capaMap[k] = sel.value; else delete KP.capaMap[k];
       await kpSave('capaMap/'+kpKey(k), sel.value ? {key:k, rowId:sel.value, by:who(), at:Date.now()} : null);
